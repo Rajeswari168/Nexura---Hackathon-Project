@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexura - Dashboard</title>
+    <link rel="stylesheet" href="css/style.css">
+    <!-- Chart.js for premium data visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <div id="sidebar-container"></div>
+
+        <!-- Main Workspace -->
+        <div class="main-content">
+            <!-- Header section -->
+            <div class="header-container">
+                <div class="header-title">
+                    <h1 id="welcome-msg">Good evening, Patient</h1>
+                    <p>Here is your adaptive companion summary for today.</p>
+                </div>
+                <div class="profile-widget">
+                    <div class="profile-avatar" id="user-avatar">PT</div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 15px;" id="profile-name">Patient</div>
+                        <div style="font-size: 13px; color: var(--text-muted);" id="profile-role">Companion Portal</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Risk Banner -->
+            <div id="risk-container" class="risk-banner risk-LOW">
+                <div>
+                    <h3 style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">AI Overall Deterioration Risk: <span id="risk-level-badge">LOW</span></h3>
+                    <p id="risk-findings" style="font-size: 14px;">All vitals logged are healthy. Excellent medication compliance cycles tracked.</p>
+                </div>
+                <button class="btn btn-secondary" onclick="triggerAIDeteriorationScan()" style="border-color: rgba(255,255,255,0.4); padding: 8px 16px; font-size:13px;">Re-Analyze Vitals</button>
+            </div>
+
+            <!-- Dashboard Card Grid -->
+            <div class="grid-container" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
+                <!-- Health Score Card -->
+                <div class="card" style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;">
+                    <div class="card-header" style="width: 100%;"><span class="card-title">Daily Health Score</span></div>
+                    <div style="position: relative; width: 120px; height: 120px; margin: 12px 0;">
+                        <svg width="120" height="120" viewBox="0 0 120 120">
+                            <circle cx="60" cy="60" r="50" fill="none" stroke="var(--border-color)" stroke-width="10"></circle>
+                            <circle id="score-circle" cx="60" cy="60" r="50" fill="none" stroke="var(--success)" stroke-width="10" stroke-dasharray="314" stroke-dashoffset="314" stroke-linecap="round" style="transition: stroke-dashoffset 1s ease-in-out; transform: rotate(-90deg); transform-origin: 50% 50%;"></circle>
+                        </svg>
+                        <div id="health-score-val" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 28px; font-weight: 700;">85%</div>
+                    </div>
+                    <p id="score-caption" style="font-size: 13px; color: var(--text-secondary); margin-top: 8px;">Stable. Vitals are excellent.</p>
+                </div>
+
+                <!-- Medication Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Medication Compliance</span>
+                        <span style="font-size: 20px;">💊</span>
+                    </div>
+                    <div style="font-size: 36px; font-weight: 700; color: var(--primary); margin-bottom: 8px;" id="med-compliance-val">--%</div>
+                    <p style="font-size: 14px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 16px;">Overall ingestion rate logged over the past 7 days.</p>
+                    <a href="medications.html" class="btn btn-secondary" style="width: 100%; font-size: 13px; padding: 10px;">Schedule Planner</a>
+                </div>
+
+                <!-- Sleep Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Sleep Ingestions</span>
+                        <span style="font-size: 20px;">🌙</span>
+                    </div>
+                    <div style="font-size: 36px; font-weight: 700; color: #818cf8; margin-bottom: 8px;" id="sleep-duration-val">-- hrs</div>
+                    <p id="sleep-quality-lbl" style="font-weight: 600; font-size: 14px; margin-bottom: 12px; color: var(--success);">Quality: Normal</p>
+                    <a href="sleep.html" class="btn btn-secondary" style="width: 100%; font-size: 13px; padding: 10px;">Sleep Analytics</a>
+                </div>
+
+                <!-- Active Caregiver Support Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Emergency Contact</span>
+                        <span style="font-size: 20px; color: var(--danger);">🚨</span>
+                    </div>
+                    <div style="font-weight: 600; font-size: 16px; margin-bottom: 4px;" id="caregiver-name">John Doe</div>
+                    <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;" id="caregiver-phone">Caregiver: +1 (234) 567-890</p>
+                    <button class="btn btn-danger" onclick="triggerEmergencyEscalation()" style="width: 100%; font-size: 13px; padding: 10px;">Trigger Caregiver SMS</button>
+                </div>
+            </div>
+
+            <!-- Two Column Dashboard Grid -->
+            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 24px;">
+                <!-- Vitals Chart Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Physiological Vitals Trends</span>
+                        <span style="font-size: 14px; color: var(--text-secondary);">Last 7 readings</span>
+                    </div>
+                    <div style="height: 280px; width: 100%;">
+                        <canvas id="vitalsChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Today's Reminders Column -->
+                <div class="card" style="display: flex; flex-direction: column;">
+                    <div class="card-header" style="margin-bottom: 12px;">
+                        <span class="card-title">Reminders Engine</span>
+                        <span style="font-size: 13px; color: var(--primary); font-weight: 600; cursor: pointer;" onclick="adaptReminders()">Adapt Timing</span>
+                    </div>
+                    <div id="reminders-list" style="display:flex; flex-direction:column; gap:12px; flex-grow:1; overflow-y:auto; max-height: 280px;">
+                        <div style="text-align: center; color: var(--text-muted); font-size: 13px; margin: auto;">No pending reminders for today.</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bottom Dashboard Grid: Alerts Stream & Empathetic Chat Quick Window -->
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+                <!-- Active Warning Stream -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Active Alert Stream</span>
+                        <span style="font-size: 20px;">🔔</span>
+                    </div>
+                    <div id="dashboard-alerts" style="display: flex; flex-direction: column; gap: 12px; max-height: 240px; overflow-y: auto;">
+                        <div style="color: var(--text-muted); text-align: center; font-size: 13px; margin: 20px 0;">No active alerts logged.</div>
+                    </div>
+                </div>
+
+                <!-- Empathetic AI Chat Widget -->
+                <div class="card" style="display: flex; flex-direction: column;">
+                    <div class="card-header" style="border-bottom: 1px solid var(--border-color); padding-bottom: 10px; margin-bottom: 12px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div class="chat-status"></div>
+                            <span class="card-title" style="font-size:15px;">Empathy Agent - Nexura</span>
+                        </div>
+                    </div>
+                    <div id="chat-quick-history" style="height: 140px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; padding: 4px;">
+                        <div class="chat-bubble ai" style="padding:8px 12px; font-size: 13px;">Hi! I'm Nexura, your companion. How are you feeling today?</div>
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="chat-quick-input" class="form-input" style="flex-grow:1; padding: 8px 12px; font-size:13px;" placeholder="Ask Nexura..." onkeydown="if(event.key==='Enter') sendQuickChatMessage()">
+                        <button class="btn btn-primary" onclick="sendQuickChatMessage()" style="padding: 8px 16px; font-size:13px;">Send</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts Integration -->
+    <script src="js/app.js"></script>
+    <script src="js/dashboard.js"></script>
+</body>
+</html>

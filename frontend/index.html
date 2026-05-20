@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexura - Empathetic AI Chronic Care Companion</title>
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        .landing-hero {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            min-height: 100vh;
+            width: 100vw;
+            padding: 40px;
+            background: radial-gradient(circle at 10% 20%, rgba(224, 242, 254, 0.4) 0%, rgba(248, 250, 252, 1) 90%);
+        }
+        [data-theme="dark"] .landing-hero {
+            background: radial-gradient(circle at 10% 20%, rgba(3, 105, 161, 0.2) 0%, rgba(15, 23, 42, 1) 90%);
+        }
+        .hero-logo {
+            font-size: 64px;
+            font-weight: 800;
+            background: linear-gradient(135deg, var(--primary), var(--success));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 16px;
+        }
+        .hero-tagline {
+            font-size: 24px;
+            color: var(--text-secondary);
+            max-width: 600px;
+            line-height: 1.6;
+            margin-bottom: 40px;
+        }
+        .cta-group {
+            display: flex;
+            gap: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="landing-hero">
+        <div class="hero-logo">Nexura</div>
+        <p class="hero-tagline">
+            Your empathetic, AI-powered chronic care companion. Track health logs, sleep consistency, medication compliance, and analyze reports with real-time multimodal intelligence.
+        </p>
+        <div class="cta-group">
+            <a href="login.html" class="btn btn-primary" style="font-size: 16px; padding: 14px 32px;">Log In</a>
+            <a href="register.html" class="btn btn-secondary" style="font-size: 16px; padding: 14px 32px;">Sign Up</a>
+        </div>
+    </div>
+
+    <script>
+        // Automatic session redirect check
+        if (localStorage.getItem("nexura-token")) {
+            window.location.href = "dashboard.html";
+        }
+        const savedTheme = localStorage.getItem("nexura-theme") || "light";
+        document.documentElement.setAttribute("data-theme", savedTheme);
+    </script>
+</body>
+</html>

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexura - Medical Reports</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <div id="sidebar-container"></div>
+
+        <!-- Main Workspace -->
+        <div class="main-content">
+            <!-- Header section -->
+            <div class="header-container">
+                <div class="header-title">
+                    <h1>Secure Medical Reports Vault</h1>
+                    <p>Upload clinical documents (PDF, Images) for native multimodal AI parsing, OCR value extraction, and risk scanning.</p>
+                </div>
+                <div class="profile-widget">
+                    <div class="profile-avatar" id="user-avatar">PT</div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 15px;" id="profile-name">Patient</div>
+                        <div style="font-size: 13px; color: var(--text-muted);" id="profile-role">Companion Portal</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Upload Dragzone & Document list -->
+            <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 24px; align-items: start;">
+                <!-- Left side: Upload card -->
+                <div class="card" style="display:flex; flex-direction:column; gap:20px;">
+                    <div class="card-header">
+                        <span class="card-title">Upload Clinical Records</span>
+                        <span style="font-size:20px;">📂</span>
+                    </div>
+
+                    <!-- Dropzone -->
+                    <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-picker').click()">
+                        <div class="upload-icon">📤</div>
+                        <h4 style="font-size:15px; font-weight:600; color:var(--text-primary);">Drag & drop files here</h4>
+                        <p style="font-size:12px; color:var(--text-muted); margin-top:8px;">Supports PDF, PNG, JPEG, JPG up to 10MB</p>
+                        <input type="file" id="file-picker" style="display:none;" onchange="handleFileSelected(event)">
+                    </div>
+
+                    <!-- Progress bar -->
+                    <div id="upload-progress-container" style="display:none;">
+                        <div style="display:flex; justify-content:space-between; font-size:12px; font-weight:600; color:var(--text-secondary); margin-bottom:6px;">
+                            <span id="uploading-file-name">document.pdf</span>
+                            <span id="upload-pct">0%</span>
+                        </div>
+                        <div style="width:100%; height:6px; background:var(--border-color); border-radius:3px; overflow:hidden;">
+                            <div id="upload-progress-bar" style="width:0%; height:100%; background:var(--primary); transition: width 0.1s ease;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right side: Documents Vault list -->
+                <div class="card" style="min-height: 400px; display:flex; flex-direction:column;">
+                    <div class="card-header" style="border-bottom:1px solid var(--border-color); padding-bottom:12px; margin-bottom:20px;">
+                        <span class="card-title">Your Uploaded Documents</span>
+                        <span id="vault-count" style="font-size:12px; font-weight:700; padding:4px 8px; border-radius:12px; background:var(--primary-light); color:var(--primary);">0 Documents</span>
+                    </div>
+
+                    <div id="reports-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px;">
+                        <!-- Report cards injected dynamically via reports.js -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Document Preview & AI Analysis Modal Overlay -->
+    <div class="modal-overlay" id="preview-modal">
+        <div class="modal-content" style="max-width: 800px; width: 95%;">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:16px; margin-bottom:20px;">
+                <h2 id="modal-doc-title" style="font-size:18px; font-weight:700; color:var(--text-primary);">Document Preview & AI Insights</h2>
+                <button onclick="closePreviewModal()" class="btn btn-secondary" style="padding:6px 12px; font-size:14px; font-weight:700;">✕ Close</button>
+            </div>
+
+            <!-- Modal Content Grid: Document view vs AI notes -->
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:24px;">
+                <!-- Left panel: PDF or Image Frame preview -->
+                <div style="border:1px solid var(--border-color); border-radius:var(--border-radius-sm); overflow:hidden; background:var(--bg-primary); height:420px; display:flex; align-items:center; justify-content:center;">
+                    <iframe id="pdf-preview-frame" style="width:100%; height:100%; border:none; display:none;"></iframe>
+                    <img id="image-preview-element" style="max-width:100%; max-height:100%; object-fit:contain; display:none;" alt="Report Preview">
+                    <div id="text-fallback-preview" style="padding:20px; font-size:13px; color:var(--text-muted); text-align:center; display:none;">
+                        Text representation matches PDF content parsed via AI OCR engine.
+                    </div>
+                </div>
+
+                <!-- Right panel: AI analysis panel -->
+                <div style="display:flex; flex-direction:column; gap:16px; height:420px; overflow-y:auto; padding-right:8px;">
+                    <div>
+                        <h4 style="font-size:14px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; margin-bottom:8px;">AI Findings Summary</h4>
+                        <div id="ai-summary-text" style="font-size:14px; color:var(--text-primary); line-height:1.5; background:var(--bg-primary); padding:12px; border-radius:var(--border-radius-sm); border-left:4px solid var(--primary);">
+                            Click "Analyze Report" to trigger native Multimodal OCR parsing.
+                        </div>
+                    </div>
+
+                    <div>
+                        <h4 style="font-size:14px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; margin-bottom:8px;">Report Risk Rating</h4>
+                        <span id="ai-risk-score-badge" class="risk-badge" style="font-size:13px; font-weight:700; padding:6px 16px; border-radius:16px; display:inline-block;">--</span>
+                    </div>
+
+                    <div>
+                        <h4 style="font-size:14px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; margin-bottom:8px;">Raw Extracted Contents</h4>
+                        <pre id="raw-extracted-block" style="font-size:11px; white-space:pre-wrap; background:var(--bg-primary); padding:12px; border-radius:var(--border-radius-sm); max-height:160px; overflow-y:auto; border:1px solid var(--border-color); color:var(--text-secondary);"></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/app.js"></script>
+    <script src="js/reports.js"></script>
+</body>
+</html>

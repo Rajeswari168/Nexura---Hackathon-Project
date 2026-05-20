@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexura - Alerts & Anomalies</title>
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        /* Special layout styles for Alerts dashboard */
+        .alerts-filter-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-sm);
+            padding: 16px 24px;
+            margin-bottom: 24px;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .filter-tabs {
+            display: flex;
+            gap: 8px;
+        }
+
+        .filter-tab {
+            padding: 8px 16px;
+            border-radius: var(--border-radius-sm);
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: var(--transition);
+        }
+
+        .filter-tab.active {
+            background-color: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+
+        .filter-tab:hover:not(.active) {
+            background-color: var(--primary-light);
+            color: var(--primary-hover);
+        }
+
+        .alerts-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .alert-card {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-md);
+            padding: 20px 24px;
+            box-shadow: var(--shadow-sm);
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 20px;
+            transition: transform 0.3s ease, opacity 0.3s ease, box-shadow 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .alert-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .alert-card.critical {
+            border-left: 6px solid var(--danger);
+            background: linear-gradient(to right, rgba(239, 68, 68, 0.03), transparent);
+            animation: pulseCriticalBorder 3s infinite;
+        }
+        
+        @keyframes pulseCriticalBorder {
+            0%, 100% { border-left-color: var(--danger); }
+            50% { border-left-color: var(--critical-light); }
+        }
+
+        .alert-card.high {
+            border-left: 6px solid var(--warning);
+        }
+
+        .alert-card.medium {
+            border-left: 6px solid #818cf8; /* sleep / purple color */
+        }
+
+        .alert-card.low {
+            border-left: 6px solid var(--success);
+        }
+
+        .alert-card.read {
+            border-left-color: var(--border-color) !important;
+            opacity: 0.75;
+        }
+
+        .alert-info-col {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            flex-grow: 1;
+        }
+
+        .alert-meta {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            font-size: 12px;
+        }
+
+        .badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+
+        .badge-critical {
+            background-color: var(--danger-light);
+            color: var(--danger);
+        }
+
+        .badge-high {
+            background-color: var(--warning-light);
+            color: #b45309;
+        }
+
+        .badge-medium {
+            background-color: #e0e7ff;
+            color: #4338ca;
+        }
+
+        .badge-low {
+            background-color: var(--success-light);
+            color: #047857;
+        }
+
+        .badge-category {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+        }
+
+        .alert-title-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .alert-card-title {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .alert-desc {
+            font-size: 14px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        .alert-time {
+            color: var(--text-muted);
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .alert-actions {
+            display: flex;
+            gap: 8px;
+            align-self: center;
+        }
+
+        .empty-alerts-placeholder {
+            text-align: center;
+            padding: 60px 40px;
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-md);
+            color: var(--text-muted);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .empty-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <div id="sidebar-container"></div>
+
+        <!-- Main Workspace -->
+        <div class="main-content">
+            <!-- Header section -->
+            <div class="header-container">
+                <div class="header-title">
+                    <h1>Physiological & Adherence Warning Stream</h1>
+                    <p>Chronological logs of medical anomalies, missed doses, and sleep pattern issues detected by AI.</p>
+                </div>
+                <div class="profile-widget">
+                    <div class="profile-avatar" id="user-avatar">PT</div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 15px;" id="profile-name">Patient</div>
+                        <div style="font-size: 13px; color: var(--text-muted);" id="profile-role">Companion Portal</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Risk Overview Strip -->
+            <div id="risk-overview-container" style="display: none;"></div>
+
+            <!-- Filter and Actions Bar -->
+            <div class="alerts-filter-bar">
+                <div class="filter-tabs">
+                    <button class="filter-tab active" onclick="setAlertFilter('active')">Active Alerts (<span id="active-count">0</span>)</button>
+                    <button class="filter-tab" onclick="setAlertFilter('archived')">Archived Alerts</button>
+                    <button class="filter-tab" onclick="setAlertFilter('all')">All History</button>
+                </div>
+                <button class="btn btn-secondary" id="mark-all-read-btn" onclick="markAllAlertsAsRead()" style="padding: 8px 16px; font-size: 13px;">
+                    ✓ Mark All as Read
+                </button>
+            </div>
+
+            <!-- Alerts Stream Container -->
+            <div id="alerts-stream-container" class="alerts-stack">
+                <!-- Skeletons loading fallback -->
+                <div class="card" style="padding:24px; text-align:center; color:var(--text-muted);">
+                    Loading alert stream metrics...
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts Integration -->
+    <script src="js/app.js"></script>
+    <script src="js/alerts.js"></script>
+</body>
+</html>

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexura - Sleep Tracking</title>
+    <link rel="stylesheet" href="css/style.css">
+    <!-- Chart.js for visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <div id="sidebar-container"></div>
+
+        <!-- Main Workspace -->
+        <div class="main-content">
+            <!-- Header section -->
+            <div class="header-container">
+                <div class="header-title">
+                    <h1>Sleep Tracking & Consistency</h1>
+                    <p>Log your sleeping cycles to trigger AI-driven medication time-shifts and rest warnings.</p>
+                </div>
+                <div class="profile-widget">
+                    <div class="profile-avatar" id="user-avatar">PT</div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 15px;" id="profile-name">Patient</div>
+                        <div style="font-size: 13px; color: var(--text-muted);" id="profile-role">Companion Portal</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dashboard Columns -->
+            <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 24px; align-items: start;">
+                <!-- Sleep Logging Form Card -->
+                <div class="card">
+                    <div class="card-header" style="margin-bottom: 20px;">
+                        <span class="card-title">Log Sleep Window</span>
+                        <span style="font-size: 20px;">🌙</span>
+                    </div>
+
+                    <form id="sleep-log-form" onsubmit="saveSleepWindow(event)">
+                        <div class="form-group">
+                            <label for="sleepStartTime">Sleep Start Time</label>
+                            <input type="datetime-local" id="sleepStartTime" class="form-input" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="wakeTime">Wake Time</label>
+                            <input type="datetime-local" id="wakeTime" class="form-input" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="sleepQuality">Sleep Quality (1-5)</label>
+                            <select id="sleepQuality" class="form-input" required style="width:100%;">
+                                <option value="5">5/5 - Deep and refreshing</option>
+                                <option value="4">4/5 - Peaceful and restive</option>
+                                <option value="3">3/5 - Fair but interrupted</option>
+                                <option value="2">2/5 - Restless / Poor</option>
+                                <option value="1">1/5 - Extremely bad / No sleep</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="interruptionsCount">Interruptions Count</label>
+                            <input type="number" id="interruptionsCount" class="form-input" placeholder="e.g. 0" required min="0" max="20">
+                        </div>
+
+                        <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 10px;">Record Sleep Log</button>
+                    </form>
+                </div>
+
+                <!-- Sleep Visualization Trends Card -->
+                <div class="card" style="display: flex; flex-direction: column; min-height: 480px;">
+                    <div class="card-header">
+                        <span class="card-title">Sleep Durations & Consistency Trends</span>
+                        <span style="font-size: 14px; color: var(--text-secondary);">Last 10 logs</span>
+                    </div>
+                    <div style="height: 360px; width: 100%; flex-grow: 1;">
+                        <canvas id="detailedSleepChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Historical Sleep Logs Card -->
+            <div class="card">
+                <div class="card-header" style="margin-bottom: 16px;">
+                    <span class="card-title">Historical Sleep Journals</span>
+                    <span style="font-size: 20px;">📜</span>
+                </div>
+                <div class="history-table-container">
+                    <table class="history-table">
+                        <thead>
+                            <tr>
+                                <th>Sleep Start</th>
+                                <th>Wake Time</th>
+                                <th>Duration (Hours)</th>
+                                <th>Quality Score</th>
+                                <th>Interruptions</th>
+                                <th>Date Logged</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sleep-history-rows">
+                            <!-- Injected dynamically via sleep.js -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/app.js"></script>
+    <script src="js/sleep.js"></script>
+</body>
+</html>

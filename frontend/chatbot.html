@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexura - AI Chatbot</title>
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        /* Pulse Animation for Speech Microphone */
+        .mic-btn {
+            background-color: var(--primary-light);
+            color: var(--primary);
+            transition: var(--transition);
+        }
+        .mic-btn:hover {
+            background-color: var(--primary);
+            color: white;
+        }
+        .mic-btn.listening {
+            background-color: var(--danger);
+            color: white;
+            animation: pulse-ring 1.5s infinite;
+        }
+        @keyframes pulse-ring {
+            0% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+            }
+            70% {
+                box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+            }
+        }
+        /* Speak Audio Bubble Indicator */
+        .speaker-read-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 2px 6px;
+            color: var(--text-muted);
+            transition: var(--transition);
+            margin-left: 8px;
+            border-radius: 4px;
+        }
+        .speaker-read-btn:hover {
+            color: var(--primary);
+            background-color: var(--bg-primary);
+        }
+        .speaker-read-btn.playing {
+            color: var(--success);
+            animation: text-pulse 1s infinite alternate;
+        }
+        @keyframes text-pulse {
+            0% { transform: scale(1); }
+            100% { transform: scale(1.1); }
+        }
+        /* Adaptive Emotion Headers */
+        .chat-header.emotion-NORMAL {
+            border-top: 4px solid var(--success);
+        }
+        .chat-header.emotion-EMPATHETIC {
+            border-top: 4px solid var(--warning);
+        }
+        .chat-header.emotion-URGENT {
+            border-top: 4px solid var(--danger);
+            animation: urgent-flash 2s infinite alternate;
+        }
+        .chat-header.emotion-CRITICAL {
+            border-top: 4px solid var(--critical-light);
+            animation: critical-flash 1s infinite alternate;
+        }
+        @keyframes urgent-flash {
+            0% { box-shadow: inset 0 4px 10px rgba(245, 158, 11, 0.05); }
+            100% { box-shadow: inset 0 4px 20px rgba(239, 68, 68, 0.1); }
+        }
+        @keyframes critical-flash {
+            0% { background-color: var(--bg-secondary); }
+            100% { background-color: var(--danger-light); }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <div id="sidebar-container"></div>
+
+        <!-- Main Workspace -->
+        <div class="main-content">
+            <!-- Header section -->
+            <div class="header-container">
+                <div class="header-title">
+                    <h1>AI Companion Chat - Nexura</h1>
+                    <p>Discuss your vitals, log emotional states, or ask medical report clarification questions in an empathetic environment.</p>
+                </div>
+                <div class="profile-widget">
+                    <div class="profile-avatar" id="user-avatar">PT</div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 15px;" id="profile-name">Patient</div>
+                        <div style="font-size: 13px; color: var(--text-muted);" id="profile-role">Companion Portal</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat screen layout -->
+            <div style="display: grid; grid-template-columns: 3fr 1fr; gap: 24px; align-items: start;">
+                <!-- Left panel: Chat pane -->
+                <div class="chat-container">
+                    <!-- Chat Header -->
+                    <div class="chat-header" id="chatbot-header" style="justify-content: space-between; display: flex; align-items: center; width: 100%;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <div class="chat-status" id="chat-status-indicator"></div>
+                            <div>
+                                <div style="font-weight: 700; font-size: 15px;" id="chatbot-header-title">Nexura AI Empathy Companion</div>
+                                <div style="font-size: 12px; color: var(--text-secondary);" id="ai-context-indicator">Context memory synchronized</div>
+                            </div>
+                            <span id="detected-lang-badge" class="badge" style="display:none; margin-left: 12px; padding: 4px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; background-color: var(--primary-light); color: var(--primary-hover);">
+                                Detected: English
+                            </span>
+                        </div>
+                        
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <!-- Language Dropdown -->
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                <label for="language-select" style="font-size: 12px; font-weight: 600; color: var(--text-secondary);">Language:</label>
+                                <select id="language-select" style="padding: 6px 12px; font-size: 12px; font-weight: 500; border-radius: var(--border-radius-sm); border: 1px solid var(--border-color); background-color: var(--bg-secondary); color: var(--text-primary); cursor: pointer; outline: none;" onchange="onLanguageChange()">
+                                    <option value="auto">Auto Detect</option>
+                                    <option value="en">English</option>
+                                    <option value="ta">Tamil (தமிழ்)</option>
+                                    <option value="hi">Hindi (हिन्दी)</option>
+                                    <option value="te">Telugu (తెలుగు)</option>
+                                    <option value="ml">Malayalam (മലയാളം)</option>
+                                    <option value="kn">Kannada (ಕನ್ನಡ)</option>
+                                    <option value="fr">French (Français)</option>
+                                    <option value="es">Spanish (Español)</option>
+                                    <option value="de">German (Deutsch)</option>
+                                    <option value="ja">Japanese (日本語)</option>
+                                </select>
+                            </div>
+
+                            <!-- Clear Chat -->
+                            <button class="btn btn-secondary" onclick="confirmClearHistory()" style="padding: 6px 12px; font-size: 12px; font-weight: 600; border-radius: var(--border-radius-sm); display: flex; align-items: center; gap: 4px;">
+                                🗑️ Clear
+                            </button>
+
+                            <!-- AI Settings -->
+                            <button class="btn btn-secondary" onclick="openSettingsModal()" style="padding: 6px 12px; font-size: 12px; font-weight: 600; border-radius: var(--border-radius-sm); display: flex; align-items: center; gap: 4px;">
+                                ⚙️ AI Settings
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Chat History Pane -->
+                    <div class="chat-history" id="chat-history">
+                        <div class="chat-bubble ai">
+                            Hello! I am Nexura, your personal healthcare companion. How are you feeling today? I have access to your daily health history, sleep journals, and medications to support you empathetically.
+                        </div>
+                    </div>
+
+                    <!-- Suggestion Chips -->
+                    <div style="padding: 10px 24px; display:flex; gap:8px; flex-wrap:wrap; border-top:1px solid var(--border-color); background:var(--bg-primary);">
+                        <button class="btn btn-secondary" onclick="sendSuggestionChip('Explain how sleep duration affects my medication delay')" style="font-size: 12px; padding: 6px 12px; border-radius: 16px;">⏱️ Rest & Reminders</button>
+                        <button class="btn btn-secondary" onclick="sendSuggestionChip('I feel severe fatigue today, what should I do?')" style="font-size: 12px; padding: 6px 12px; border-radius: 16px;">⚠️ Severe Fatigue</button>
+                        <button class="btn btn-secondary" onclick="sendSuggestionChip('Help me relax with a quick mindfulness exercise')" style="font-size: 12px; padding: 6px 12px; border-radius: 16px;">🧘 Mindfulness Tip</button>
+                    </div>
+
+                    <!-- Chat Input Area -->
+                    <div class="chat-input-area" style="align-items: center; gap: 12px;">
+                        <!-- Voice Output Toggle -->
+                        <button id="voice-output-toggle" class="btn btn-secondary" onclick="toggleVoiceOutput()" style="padding: 0; width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px;" title="Toggle Speech Output">
+                            🔊
+                        </button>
+
+                        <input type="text" id="chat-message-input" class="chat-input" placeholder="Type a message, or click the mic to speak..." onkeydown="if(event.key === 'Enter') sendChatMessage()">
+                        
+                        <!-- Mic Button -->
+                        <button id="voice-input-btn" class="mic-btn" onclick="toggleVoiceInput()" style="width: 42px; height: 42px; border-radius: 50%; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 18px;" title="Speak Message">
+                            🎤
+                        </button>
+
+                        <button class="btn btn-primary" onclick="sendChatMessage()" style="padding:10px 24px; height: 42px; font-weight: 600;">Send</button>
+                    </div>
+                </div>
+
+                <!-- Right panel: Quick stats companion panel -->
+                <div class="card" style="display:flex; flex-direction:column; gap:20px; min-height: 550px;">
+                    <div class="card-header" style="border-bottom:1px solid var(--border-color); padding-bottom:12px;">
+                        <span class="card-title">Companion Context</span>
+                    </div>
+
+                    <div>
+                        <h4 style="font-size: 13px; font-weight:700; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px;">Current Risk Rating</h4>
+                        <div id="companion-risk-badge" class="risk-banner" style="margin-bottom:0; padding:10px 16px; font-size:13px; font-weight:700; display:inline-block; border-radius:8px; width:100%; text-align:center;">
+                            LOADING
+                        </div>
+                    </div>
+
+                    <div>
+                        <h4 style="font-size: 13px; font-weight:700; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px;">Registered Caregiver</h4>
+                        <div style="background:var(--bg-primary); padding:12px; border-radius:8px; border:1px solid var(--border-color);">
+                            <div style="font-weight:600; font-size:14px; color:var(--text-primary);" id="caregiver-name-widget">Loading Caregiver</div>
+                            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;" id="caregiver-phone-widget">--</div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <h4 style="font-size: 13px; font-weight:700; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px;">Companion Tips</h4>
+                        <ul style="font-size:13px; color:var(--text-secondary); padding-left:16px; line-height:1.6;">
+                            <li>Log vitals daily to help the companion evaluate metrics.</li>
+                            <li>Uploaded files are automatically analyzed and referenced in chatbot prompts.</li>
+                            <li>Risk changes instantly adapt chatbot reassurance tone.</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI Settings Modal -->
+    <div id="settings-modal" class="modal-overlay">
+        <div class="modal-content" style="max-width: 500px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px;">
+                <h3 style="font-size: 20px; font-weight: 700; color: var(--text-primary);">🤖 AI Companion Engine Settings</h3>
+                <button onclick="closeSettingsModal()" style="background: none; border: none; font-size: 20px; cursor: pointer; color: var(--text-muted);">&times;</button>
+            </div>
+            
+            <div class="form-group">
+                <label for="settings-provider-select" style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">Active AI Provider</label>
+                <select id="settings-provider-select" class="form-input" style="width: 100%; cursor: pointer;" onchange="toggleSettingsKeyFields()">
+                    <option value="groq">Groq (Llama 3.3 70B - Free & Blazing Fast)</option>
+                    <option value="gemini">Gemini (2.5 Flash - Dynamic fallback)</option>
+                    <option value="openai">OpenAI (GPT-4o Mini - Optional)</option>
+                    <option value="mock">Offline / Local Empathy Engine</option>
+                </select>
+            </div>
+
+            <!-- Groq API Key Field -->
+            <div class="form-group" id="settings-groq-key-group">
+                <label for="settings-groq-key" style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">Groq API Key</label>
+                <input type="password" id="settings-groq-key" class="form-input" placeholder="gsk_..." style="width: 100%;">
+                <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Get a free, high-speed API key at <a href="https://console.groq.com" target="_blank" style="color: var(--primary); font-weight: 500;">console.groq.com</a>.</p>
+            </div>
+
+            <!-- Gemini API Key Field -->
+            <div class="form-group" id="settings-gemini-key-group" style="display: none;">
+                <label for="settings-gemini-key" style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">Gemini API Key</label>
+                <input type="password" id="settings-gemini-key" class="form-input" placeholder="AIzaSy..." style="width: 100%;">
+                <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Override or customize the Gemini API key.</p>
+            </div>
+
+            <!-- OpenAI API Key Field -->
+            <div class="form-group" id="settings-openai-key-group" style="display: none;">
+                <label for="settings-openai-key" style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">OpenAI API Key</label>
+                <input type="password" id="settings-openai-key" class="form-input" placeholder="sk-..." style="width: 100%;">
+            </div>
+
+            <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px; border-top: 1px solid var(--border-color); padding-top: 16px;">
+                <button class="btn btn-secondary" onclick="closeSettingsModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveAISettings()">Save Configuration</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/app.js"></script>
+    <script src="js/chatbot.js"></script>
+</body>
+</html>

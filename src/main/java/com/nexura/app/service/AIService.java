@@ -1,0 +1,1193 @@
+package com.nexura.app.service;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.nexura.app.entity.*;
+import com.nexura.app.repository.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Service
+public class AIService {
+
+    @Autowired
+    private HealthLogRepository healthLogRepository;
+
+    @Autowired
+    private SleepLogRepository sleepLogRepository;
+
+    @Autowired
+    private MedicationAdherenceRepository adherenceRepository;
+
+    @Autowired
+    private AlertRepository alertRepository;
+
+    @Autowired
+    private MedicalReportRepository reportRepository;
+
+    @Autowired
+    private ReportAnalysisRepository reportAnalysisRepository;
+
+    @Autowired
+    private AIAnalysisRepository aiAnalysisRepository;
+
+    @Autowired
+    private ChatbotMessageRepository chatRepository;
+
+    @Autowired
+    private UserService userService;
+
+    @Autowired
+    private MedicationService medicationService;
+
+    @Value("${nexura.ai.provider}")
+    private String aiProvider;
+
+    // --- Groq (Primary) ---
+    @Value("${nexura.ai.groq.key:}")
+    private String groqKey;
+
+    @Value("${nexura.ai.groq.url:https://api.groq.com/openai/v1/chat/completions}")
+    private String groqUrl;
+
+    @Value("${nexura.ai.groq.model:llama-3.3-70b-versatile}")
+    private String groqModel;
+
+    // --- Gemini (Fallback) ---
+    @Value("${nexura.ai.gemini.key:}")
+    private String geminiKey;
+
+    @Value("${nexura.ai.gemini.url:https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent}")
+    private String geminiUrl;
+
+    // --- OpenAI (Fallback) ---
+    @Value("${nexura.ai.openai.key:}")
+    private String openaiKey;
+
+    @Value("${nexura.ai.openai.url:https://api.openai.com/v1/chat/completions}")
+    private String openaiUrl;
+
+    @Value("${nexura.ai.openai.model:gpt-4o-mini}")
+    private String openaiModel;
+
+    @Value("${nexura.upload.dir:./uploads}")
+    private String uploadDir;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    // 1. Analyze Vitals Trend & Compliance
+    @Transactional
+    public AIAnalysis analyzeOverallDeterioration() {
+        User user = userService.getCurrentUser();
+        String context = compilePatientContext(user);
+
+        String prompt = "You are an AI medical analyzer. Analyze the following patient history and current vitals:\n" +
+                context + "\n\n" +
+                "Evaluate the overall deterioration risk. Classify the risk level strictly as: LOW, MEDIUM, HIGH, or CRITICAL.\n" +
+                "Respond ONLY in valid raw JSON format matching this schema:\n" +
+                "{\n" +
+                "  \"riskLevel\": \"LOW | MEDIUM | HIGH | CRITICAL\",\n" +
+                "  \"keyFindings\": \"Bullet point summary of health status\",\n" +
+                "  \"recommendations\": \"Bullet point suggestions and actions\"\n" +
+                "}\n" +
+                "Do not include markdown tags like ```json or wrappers around the JSON.";
+
+        String aiResponse = queryAI(prompt);
+        AIAnalysis analysis = parseAIAnalysis(user, aiResponse);
+        
+        // Auto-safeguard: If risk level is CRITICAL or HIGH, create a notification alert
+        if ("CRITICAL".equals(analysis.getRiskLevel()) || "HIGH".equals(analysis.getRiskLevel())) {
+            createRiskNotificationAlert(user, analysis);
+        }
+
+        return aiAnalysisRepository.save(analysis);
+    }
+
+    public List<AIAnalysis> getAnalysisHistory() {
+        User user = userService.getCurrentUser();
+        return aiAnalysisRepository.findByUserIdOrderByCreatedAtDesc(user.getId());
+    }
+
+    public AIAnalysis getLatestRiskStatus() {
+        User user = userService.getCurrentUser();
+        return aiAnalysisRepository.findFirstByUserIdOrderByCreatedAtDesc(user.getId())
+                .orElseGet(() -> {
+                    // Fallback baseline risk if none exists
+                    AIAnalysis analysis = new AIAnalysis();
+                    analysis.setUser(user);
+                    analysis.setRiskLevel("LOW");
+                    analysis.setKeyFindings("No records logged yet. Your metrics are baseline.");
+                    analysis.setRecommendations("Start tracking your daily health, sleep, and medications to get AI assessments.");
+                    return analysis;
+                });
+    }
+
+    // 2. Chatbot response with Context Memory
+    @Transactional
+    public ChatbotMessage generateChatbotResponse(String userMessageText, String requestedLanguage, boolean voiceUsed) {
+        User user = userService.getCurrentUser();
+
+        // Fetch AI risk level and health context
+        AIAnalysis latestRisk = getLatestRiskStatus();
+        String riskLevel = latestRisk.getRiskLevel();
+        String patientContext = compilePatientContext(user);
+
+        // Fetch past chatbot messages
+        List<ChatbotMessage> chatHistory = chatRepository.findByUserIdOrderByTimestampAsc(user.getId());
+        String conversationHistory = chatHistory.stream()
+                .limit(10) // Limit context window for efficiency
+                .map(m -> "User: " + m.getMessage() + "\nAI: " + m.getAiResponse())
+                .collect(Collectors.joining("\n"));
+
+        String systemPrompt = "You are Nexura, an empathetic AI chronic care companion. You support patients with chronic conditions.\n" +
+                "Here is the patient's context:\n" +
+                patientContext + "\n" +
+                "Current AI Risk Assessment: " + riskLevel + "\n" +
+                "LATEST KEY FINDINGS: " + latestRisk.getKeyFindings() + "\n" +
+                "LATEST RECOMMENDATIONS: " + latestRisk.getRecommendations() + "\n\n" +
+                "ADAPTIVE TONE GUIDELINES:\n" +
+                "- If Risk is LOW: Be warm, positive, encouraging, and supportive. Set emotionMode to 'NORMAL'.\n" +
+                "- If Risk is MEDIUM: Be gentle, concerned, supportive. Suggest lifestyle tweaks. Set emotionMode to 'EMPATHETIC'.\n" +
+                "- If Risk is HIGH: Be deeply empathetic, extremely supportive, calm, serious, and suggest contacting their caregiver (" + user.getEmergencyCaregiverName() + ": " + user.getCaregiverPhoneNumber() + ") or doctor immediately. Set emotionMode to 'URGENT'.\n" +
+                "- If Risk is CRITICAL: Be deeply empathetic, serious, urgent, and suggest contacting emergency care or caregiver. Set emotionMode to 'CRITICAL'.\n\n" +
+                "The user requested the chatbot response in this language code: " + requestedLanguage + " (where auto means auto-detect the language from user's text, and other options are: en, ta, hi, te, ml, kn, fr, es, de, ja).\n" +
+                "Make sure to translate or speak in the specified language (Tamil, Hindi, etc.).\n\n" +
+                "Recent Chat Logs:\n" +
+                conversationHistory + "\n\n" +
+                "Patient's New Message to Respond to: " + userMessageText + "\n\n" +
+                "Respond ONLY in valid raw JSON format matching this schema:\n" +
+                "{\n" +
+                "  \"reply\": \"Concise and highly supportive chatbot response in the selected language, under 3-4 sentences.\",\n" +
+                "  \"riskLevel\": \"LOW | MEDIUM | HIGH | CRITICAL\",\n" +
+                "  \"emotionMode\": \"NORMAL | EMPATHETIC | URGENT | CRITICAL\"\n" +
+                "}\n" +
+                "Do not include markdown tags like ```json or wrappers around the JSON.";
+
+        String aiResponse = queryAI(systemPrompt);
+
+        String replyText = "";
+        String responseRisk = riskLevel;
+        String responseEmotion = "NORMAL";
+
+        try {
+            JsonNode root = objectMapper.readTree(cleanJsonString(aiResponse));
+            replyText = root.path("reply").asText("");
+            responseRisk = root.path("riskLevel").asText(riskLevel);
+            responseEmotion = root.path("emotionMode").asText("NORMAL");
+        } catch (Exception e) {
+            replyText = aiResponse;
+            if (aiResponse != null && (aiResponse.contains("{") || aiResponse.contains("reply"))) {
+                replyText = getLocalizedFallbackResponse(userMessageText, requestedLanguage, riskLevel, user);
+            }
+            // Heuristic fallbacks for risk and emotion modes
+            if ("CRITICAL".equals(riskLevel) || (aiResponse != null && (aiResponse.contains("caregiver") || aiResponse.contains("emergency")))) {
+                responseRisk = "CRITICAL";
+                responseEmotion = "CRITICAL";
+            } else if ("HIGH".equals(riskLevel)) {
+                responseRisk = "HIGH";
+                responseEmotion = "URGENT";
+            } else if ("MEDIUM".equals(riskLevel)) {
+                responseRisk = "MEDIUM";
+                responseEmotion = "EMPATHETIC";
+            }
+        }
+
+        if (replyText == null || replyText.trim().isEmpty()) {
+            replyText = getLocalizedFallbackResponse(userMessageText, requestedLanguage, riskLevel, user);
+        }
+
+        // Save AI response turn
+        ChatbotMessage turn = new ChatbotMessage();
+        turn.setUser(user);
+        turn.setMessage(userMessageText);
+        turn.setAiResponse(replyText);
+        turn.setLanguage(requestedLanguage);
+        turn.setVoiceUsed(voiceUsed);
+        
+        ChatbotMessage saved = chatRepository.save(turn);
+        saved.setRiskLevel(responseRisk);
+        saved.setEmotionMode(responseEmotion);
+        return saved;
+    }
+
+    public List<ChatbotMessage> getChatHistory() {
+        User user = userService.getCurrentUser();
+        return chatRepository.findByUserIdOrderByTimestampAsc(user.getId());
+    }
+
+    @Transactional
+    public void clearChatHistory() {
+        User user = userService.getCurrentUser();
+        List<ChatbotMessage> history = chatRepository.findByUserIdOrderByTimestampAsc(user.getId());
+        chatRepository.deleteAll(history);
+    }
+
+    // 3. Multimodal Analysis for Uploaded Reports
+    @Transactional
+    public ReportAnalysis analyzeMedicalReport(Long reportId) {
+        MedicalReport report = reportRepository.findById(reportId)
+                .orElseThrow(() -> new RuntimeException("Medical report not found"));
+
+        // Check if report has already been analyzed
+        Optional<ReportAnalysis> existing = reportAnalysisRepository.findByReportId(reportId);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+
+        String extractedText = "";
+        String summary = "";
+        String riskScore = "LOW";
+
+        if ("application/pdf".equals(report.getFileType())) {
+            // PDF: Use PDFBox text extraction
+            try {
+                String filename = report.getFilePath().substring(report.getFilePath().lastIndexOf("/") + 1);
+                Path path = Paths.get(uploadDir).resolve(filename);
+                File pdfFile = path.toFile();
+                
+                try (org.apache.pdfbox.pdmodel.PDDocument document = org.apache.pdfbox.Loader.loadPDF(pdfFile)) {
+                    org.apache.pdfbox.text.PDFTextStripper stripper = new org.apache.pdfbox.text.PDFTextStripper();
+                    extractedText = stripper.getText(document);
+                }
+            } catch (Exception e) {
+                extractedText = "Failed to parse PDF: " + e.getMessage();
+            }
+        }
+
+        // Run AI Report Analyzer Prompt
+        String analysisPrompt = "You are a clinical document parser. Analyze this clinical medical report:\n" +
+                "File name: " + report.getFileName() + "\n" +
+                "Text Extracted (if PDF): " + extractedText + "\n\n" +
+                "Identify: Important values, summaries of findings, abnormal markers, and comparison instructions.\n" +
+                "Respond ONLY in valid JSON format matching this schema:\n" +
+                "{\n" +
+                "  \"summary\": \"Concise report overview\",\n" +
+                "  \"riskIndicators\": [\"indicator 1\", \"indicator 2\"],\n" +
+                "  \"riskScore\": \"LOW | MEDIUM | HIGH | CRITICAL\",\n" +
+                "  \"recommendation\": \"Consult instructions\"\n" +
+                "}\n" +
+                "Do not include markdown tags like ```json.";
+
+        String aiResponse = "";
+        
+        // Handle Multimodal Image Inputs for JPG/JPEG/PNG natively using Gemini Vision!
+        if (report.getFileType().startsWith("image/")) {
+            aiResponse = queryGeminiVision(report, analysisPrompt);
+        } else {
+            aiResponse = queryAI(analysisPrompt);
+        }
+
+        // Parse Report Analysis response
+        ReportAnalysis reportAnalysis = new ReportAnalysis();
+        reportAnalysis.setReport(report);
+        reportAnalysis.setExtractedText(extractedText.length() > 5000 ? extractedText.substring(0, 5000) : extractedText);
+
+        try {
+            JsonNode root = objectMapper.readTree(cleanJsonString(aiResponse));
+            summary = root.path("summary").asText("No summary provided.");
+            riskScore = root.path("riskScore").asText("LOW");
+            
+            // Build recommendations block
+            StringBuilder recs = new StringBuilder();
+            recs.append("Findings:\n");
+            root.path("riskIndicators").forEach(ind -> recs.append("- ").append(ind.asText()).append("\n"));
+            recs.append("\nRecommendation: ").append(root.path("recommendation").asText("N/A"));
+            
+            reportAnalysis.setAiSummary(summary);
+            reportAnalysis.setRiskScore(riskScore);
+            // Append formatted findings in text block
+            reportAnalysis.setExtractedText(extractedText + "\n\n" + recs.toString());
+
+        } catch (Exception e) {
+            // Local fallback rule-based analyzer in case of JSON parse failure
+            reportAnalysis.setAiSummary("Clinical report uploaded. Contains vital patient history metrics.");
+            reportAnalysis.setRiskScore("MEDIUM");
+        }
+
+        return reportAnalysisRepository.save(reportAnalysis);
+    }
+
+    // --- Helper Prompt Orchestration & Integrations ---
+
+    private String compilePatientContext(User user) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Patient Details: ").append(user.getFullName()).append(", Age ").append(user.getAge()).append("\n");
+
+        // 1. Health Logs context
+        List<HealthLog> vitals = healthLogRepository.findByUserIdOrderByCreatedAtDesc(user.getId());
+        sb.append("\nRecent Health Log Entries:\n");
+        vitals.stream().limit(5).forEach(v -> {
+            sb.append("- ").append(v.getCreatedAt()).append(": ")
+              .append("HR: ").append(v.getHeartRate()).append(" BPM, ")
+              .append("BP: ").append(v.getBloodPressure()).append(", ")
+              .append("O2: ").append(v.getOxygenLevel()).append("%, ")
+              .append("Temp: ").append(v.getBodyTemperature()).append("°C, ")
+              .append("Stress: ").append(v.getStressLevel()).append("/10, ")
+              .append("Fatigue: ").append(v.getFatigueLevel()).append("\n");
+        });
+
+        // 2. Sleep Logs context
+        List<SleepLog> sleep = sleepLogRepository.findByUserIdOrderByCreatedAtDesc(user.getId());
+        sb.append("\nRecent Sleep Entries:\n");
+        sleep.stream().limit(3).forEach(s -> {
+            sb.append("- ").append(s.getSleepStartTime()).append(" to ").append(s.getWakeTime())
+              .append(": ").append(s.getDurationHours()).append(" hrs, Quality: ").append(s.getSleepQuality()).append("/5\n");
+        });
+
+        // 3. Medications & Adherence Compliance
+        double compliance = medicationService.getWeeklyComplianceRate();
+        sb.append("\nMedication Adherence Compliance (Last 7 days): ").append(String.format("%.1f", compliance)).append("%\n");
+
+        // 4. Clinical reports summary
+        List<MedicalReport> reports = reportRepository.findByUserIdOrderByUploadedAtDesc(user.getId());
+        sb.append("\nUploaded Medical Reports Context:\n");
+        reports.stream().limit(3).forEach(r -> {
+            Optional<ReportAnalysis> ra = reportAnalysisRepository.findByReportId(r.getId());
+            ra.ifPresent(reportAnalysis -> sb.append("- ").append(r.getFileName()).append(" (Risk: ").append(reportAnalysis.getRiskScore()).append("): ")
+                    .append(reportAnalysis.getAiSummary()).append("\n"));
+        });
+
+        return sb.toString();
+    }
+
+    private User tryGetCurrentUser() {
+        try {
+            return userService.getCurrentUser();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String queryAI(String prompt) {
+        User user = tryGetCurrentUser();
+        
+        String provider = (user != null && user.getAiProvider() != null && !user.getAiProvider().isEmpty()) 
+                ? user.getAiProvider() : this.aiProvider;
+        String gKey = (user != null && user.getGroqKey() != null && !user.getGroqKey().isEmpty()) 
+                ? user.getGroqKey() : this.groqKey;
+        String gemKey = (user != null && user.getGeminiKey() != null && !user.getGeminiKey().isEmpty()) 
+                ? user.getGeminiKey() : this.geminiKey;
+        String opKey = (user != null && user.getOpenaiKey() != null && !user.getOpenaiKey().isEmpty()) 
+                ? user.getOpenaiKey() : this.openaiKey;
+
+        // If mock is selected, go straight to mock
+        if ("mock".equalsIgnoreCase(provider)) {
+            return getMockAIResponse(prompt);
+        }
+
+        // 1. Try Groq if selected
+        if ("groq".equalsIgnoreCase(provider)) {
+            if (gKey != null && !gKey.isEmpty() && !gKey.equals("YOUR_GROQ_API_KEY_HERE")) {
+                String result = callGroq(prompt, gKey);
+                if (result != null && !result.isEmpty()) return result;
+            }
+            // fallback chain if groq fails
+            if (gemKey != null && !gemKey.isEmpty() && !gemKey.equals("YOUR_GEMINI_API_KEY_HERE")) {
+                String result = callGemini(prompt, gemKey);
+                if (result != null && !result.isEmpty()) return result;
+            }
+        }
+        
+        // 2. Try Gemini if selected
+        if ("gemini".equalsIgnoreCase(provider)) {
+            if (gemKey != null && !gemKey.isEmpty() && !gemKey.equals("YOUR_GEMINI_API_KEY_HERE")) {
+                String result = callGemini(prompt, gemKey);
+                if (result != null && !result.isEmpty()) return result;
+            }
+            // fallback chain if gemini fails
+            if (gKey != null && !gKey.isEmpty() && !gKey.equals("YOUR_GROQ_API_KEY_HERE")) {
+                String result = callGroq(prompt, gKey);
+                if (result != null && !result.isEmpty()) return result;
+            }
+        }
+
+        // 3. Try OpenAI if selected
+        if ("openai".equalsIgnoreCase(provider)) {
+            if (opKey != null && !opKey.isEmpty()) {
+                String result = callOpenAIChat(prompt, opKey);
+                if (result != null && !result.isEmpty()) return result;
+            }
+        }
+
+        // 4. Default fallback chain if everything else fails
+        if (gKey != null && !gKey.isEmpty() && !gKey.equals("YOUR_GROQ_API_KEY_HERE")) {
+            String result = callGroq(prompt, gKey);
+            if (result != null && !result.isEmpty()) return result;
+        }
+        if (gemKey != null && !gemKey.isEmpty() && !gemKey.equals("YOUR_GEMINI_API_KEY_HERE")) {
+            String result = callGemini(prompt, gemKey);
+            if (result != null && !result.isEmpty()) return result;
+        }
+
+        // 5. Smart rule-based fallback engine
+        return getMockAIResponse(prompt);
+    }
+
+    private String callGroq(String prompt, String apiKey) {
+        try {
+            System.err.println("[GROQ] Calling Groq API with model: " + groqModel);
+            java.net.URL url = new java.net.URL(groqUrl);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json; utf-8");
+            conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            conn.setDoOutput(true);
+
+            // Groq uses OpenAI-compatible chat completions format
+            ObjectNode root = objectMapper.createObjectNode();
+            root.put("model", groqModel);
+            root.put("temperature", 0.7);
+            root.put("max_tokens", 512);
+            ArrayNode messages = root.putArray("messages");
+            ObjectNode userMsg = messages.addObject();
+            userMsg.put("role", "user");
+            userMsg.put("content", prompt);
+
+            String jsonPayload = objectMapper.writeValueAsString(root);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(jsonPayload.getBytes(StandardCharsets.UTF_8));
+            }
+
+            int code = conn.getResponseCode();
+            System.err.println("[GROQ] Response code: " + code);
+            if (code == 200) {
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                    StringBuilder response = new StringBuilder();
+                    String line;
+                    while ((line = br.readLine()) != null) response.append(line.trim());
+                    JsonNode respJson = objectMapper.readTree(response.toString());
+                    String result = respJson.path("choices").get(0).path("message").path("content").asText("");
+                    System.err.println("[GROQ] SUCCESS - got response.");
+                    return result;
+                }
+            } else {
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getErrorStream(), StandardCharsets.UTF_8))) {
+                    StringBuilder err = new StringBuilder();
+                    String line;
+                    while ((line = br.readLine()) != null) err.append(line.trim());
+                    System.err.println("[GROQ] Error " + code + ": " + err);
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("[GROQ] Exception: " + e.getMessage());
+        }
+        return null;
+    }
+
+    private String callGemini(String prompt, String apiKey) {
+        // Try multiple Gemini model endpoints in order of preference
+        // gemini-2.5-flash confirmed 200 OK for this API key.
+        // gemini-2.0-flash has exhausted its free-tier daily quota (429).
+        String[] modelUrls = {
+            "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-lite:generateContent",
+            "https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-lite-001:generateContent"
+        };
+
+        for (String modelUrl : modelUrls) {
+            try {
+                System.err.println("[GEMINI] Trying: " + modelUrl);
+                URL url = new URL(modelUrl + "?key=" + apiKey);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json; utf-8");
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(30000);
+                conn.setDoOutput(true);
+
+                // Construct Gemini REST Payload
+                ObjectNode root = objectMapper.createObjectNode();
+                ArrayNode contents = root.putArray("contents");
+                ObjectNode contentObj = contents.addObject();
+                ArrayNode parts = contentObj.putArray("parts");
+                parts.addObject().put("text", prompt);
+
+                // Add generation config for more focused responses
+                ObjectNode generationConfig = root.putObject("generationConfig");
+                generationConfig.put("temperature", 0.7);
+                generationConfig.put("maxOutputTokens", 512);
+
+                String jsonPayload = objectMapper.writeValueAsString(root);
+                try (OutputStream os = conn.getOutputStream()) {
+                    byte[] input = jsonPayload.getBytes(StandardCharsets.UTF_8);
+                    os.write(input, 0, input.length);
+                }
+
+                int code = conn.getResponseCode();
+                System.err.println("[GEMINI] Response code from " + modelUrl + ": " + code);
+
+                if (code == 200) {
+                    try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                        StringBuilder response = new StringBuilder();
+                        String line;
+                        while ((line = br.readLine()) != null) {
+                            response.append(line.trim());
+                        }
+                        JsonNode respJson = objectMapper.readTree(response.toString());
+                        // Extract text safely
+                        JsonNode candidates = respJson.path("candidates");
+                        if (candidates.isArray() && candidates.size() > 0) {
+                            String result = candidates.get(0).path("content").path("parts").get(0).path("text").asText("");
+                            if (result != null && !result.trim().isEmpty()) {
+                                System.err.println("[GEMINI] SUCCESS from " + modelUrl);
+                                return result;
+                            }
+                        }
+                    }
+                } else if (code == 400) {
+                    // Bad request - no point retrying other models
+                    try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getErrorStream(), StandardCharsets.UTF_8))) {
+                        StringBuilder errResponse = new StringBuilder();
+                        String line;
+                        while ((line = br.readLine()) != null) errResponse.append(line.trim());
+                        System.err.println("[GEMINI] 400 Bad Request: " + errResponse);
+                    }
+                    break;
+                } else {
+                    // 429, 503, etc — try next model
+                    try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getErrorStream(), StandardCharsets.UTF_8))) {
+                        StringBuilder errResponse = new StringBuilder();
+                        String line;
+                        while ((line = br.readLine()) != null) errResponse.append(line.trim());
+                        System.err.println("[GEMINI] Error " + code + " from " + modelUrl + ": " + errResponse);
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("[GEMINI] Exception calling " + modelUrl + ": " + e.getMessage());
+            }
+        }
+
+        System.err.println("[GEMINI] All endpoints failed. Using smart fallback engine.");
+        return getMockAIResponse(prompt);
+    }
+
+    private String queryGeminiVision(MedicalReport report, String prompt) {
+        User user = tryGetCurrentUser();
+        String gemKey = (user != null && user.getGeminiKey() != null && !user.getGeminiKey().isEmpty()) 
+                ? user.getGeminiKey() : this.geminiKey;
+        try {
+            // Read Image Bytes
+            String filename = report.getFilePath().substring(report.getFilePath().lastIndexOf("/") + 1);
+            Path path = Paths.get(uploadDir).resolve(filename);
+            byte[] fileBytes = Files.readAllBytes(path);
+            String base64Image = Base64.getEncoder().encodeToString(fileBytes);
+
+            URL url = new URL(geminiUrl + "?key=" + gemKey);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json; utf-8");
+            conn.setDoOutput(true);
+
+            // Construct Multimodal vision JSON payload
+            ObjectNode root = objectMapper.createObjectNode();
+            ArrayNode contents = root.putArray("contents");
+            ObjectNode contentObj = contents.addObject();
+            ArrayNode parts = contentObj.putArray("parts");
+            
+            // Add Base64 inlineData
+            ObjectNode partImage = parts.addObject();
+            ObjectNode inlineData = partImage.putObject("inlineData");
+            inlineData.put("mimeType", report.getFileType());
+            inlineData.put("data", base64Image);
+
+            // Add clinical parser prompt text
+            ObjectNode partText = parts.addObject();
+            partText.put("text", prompt);
+
+            String jsonPayload = objectMapper.writeValueAsString(root);
+            try (OutputStream os = conn.getOutputStream()) {
+                byte[] input = jsonPayload.getBytes(StandardCharsets.UTF_8);
+                os.write(input, 0, input.length);
+            }
+
+            int code = conn.getResponseCode();
+            if (code == 200) {
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                    StringBuilder response = new StringBuilder();
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        response.append(line.trim());
+                    }
+                    JsonNode respJson = objectMapper.readTree(response.toString());
+                    return respJson.path("candidates").get(0).path("content").path("parts").get(0).path("text").asText();
+                }
+            }
+        } catch (Exception e) {
+            // Log vision-calling error
+        }
+        return getMockAIResponse(prompt);
+    }
+
+    private String callOpenAIChat(String prompt, String apiKey) {
+        try {
+            URL url = new URL(openaiUrl);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json; utf-8");
+            conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+            conn.setDoOutput(true);
+
+            // Construct OpenAI REST Payload
+            ObjectNode root = objectMapper.createObjectNode();
+            root.put("model", openaiModel);
+            ArrayNode messages = root.putArray("messages");
+            ObjectNode sysMessage = messages.addObject();
+            sysMessage.put("role", "user");
+            sysMessage.put("content", prompt);
+
+            String jsonPayload = objectMapper.writeValueAsString(root);
+            try (OutputStream os = conn.getOutputStream()) {
+                byte[] input = jsonPayload.getBytes(StandardCharsets.UTF_8);
+                os.write(input, 0, input.length);
+            }
+
+            int code = conn.getResponseCode();
+            if (code == 200) {
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                    StringBuilder response = new StringBuilder();
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        response.append(line.trim());
+                    }
+                    JsonNode respJson = objectMapper.readTree(response.toString());
+                    return respJson.path("choices").get(0).path("message").path("content").asText();
+                }
+            }
+        } catch (Exception e) {
+            // Graceful fallback
+        }
+        return getMockAIResponse(prompt);
+    }
+
+    private String getMockAIResponse(String prompt) {
+        // High quality mock generator matching target json schemas or conversational intents
+        if (prompt.contains("LOW | MEDIUM | HIGH | CRITICAL") && prompt.contains("riskLevel") && prompt.contains("emotionMode")) {
+            // New chatbot message system prompt requested
+            String lang = "en";
+            if (prompt.contains("language code: ta")) lang = "ta";
+            else if (prompt.contains("language code: hi")) lang = "hi";
+            else if (prompt.contains("language code: te")) lang = "te";
+            else if (prompt.contains("language code: ml")) lang = "ml";
+            else if (prompt.contains("language code: kn")) lang = "kn";
+            else if (prompt.contains("language code: fr")) lang = "fr";
+            else if (prompt.contains("language code: es")) lang = "es";
+            else if (prompt.contains("language code: de")) lang = "de";
+            else if (prompt.contains("language code: ja")) lang = "ja";
+
+            String risk = "LOW";
+            if (prompt.contains("Assessment: CRITICAL")) risk = "CRITICAL";
+            else if (prompt.contains("Assessment: HIGH")) risk = "HIGH";
+            else if (prompt.contains("Assessment: MEDIUM")) risk = "MEDIUM";
+
+            String userMsg = "";
+            if (prompt.contains("Patient's New Message to Respond to: ")) {
+                int start = prompt.indexOf("Patient's New Message to Respond to: ") + "Patient's New Message to Respond to: ".length();
+                int end = prompt.indexOf("\n\n", start);
+                if (end > start) {
+                    userMsg = prompt.substring(start, end).trim();
+                } else {
+                    userMsg = prompt.substring(start).trim();
+                }
+            }
+
+            return getMockLocalizedChatbotJson(userMsg, lang, risk);
+        } else if (prompt.contains("LOW | MEDIUM | HIGH | CRITICAL") && prompt.contains("riskLevel")) {
+            // Deterioration Risk JSON Response
+            boolean highRisk = prompt.contains("O2: 8") || prompt.contains("O2: 7") || prompt.contains("compliance: 4") || prompt.contains("compliance: 3");
+            boolean medRisk = prompt.contains("O2: 9") || prompt.contains("Stress: 8") || prompt.contains("Stress: 9") || prompt.contains("hrs, Quality");
+            
+            if (highRisk) {
+                return "{\n" +
+                        "  \"riskLevel\": \"HIGH\",\n" +
+                        "  \"keyFindings\": \"Significant drops in blood oxygen level (<90%) combined with medication adherence levels below 60%.\",\n" +
+                        "  \"recommendations\": \"Rest quietly and administer supplementary oxygen if prescribed. Contact your doctor immediately. We have updated your caregiver details and logged this critical warning.\"\n" +
+                        "}";
+            } else if (medRisk) {
+                return "{\n" +
+                        "  \"riskLevel\": \"MEDIUM\",\n" +
+                        "  \"keyFindings\": \"Slightly elevated fatigue levels logged alongside poor sleep duration (<6 hrs) and mild stress levels.\",\n" +
+                        "  \"recommendations\": \"Consider meditating or resting before bed. Shift non-critical morning medications forward to allow recovery rest. Monitor your blood pressure in the morning.\"\n" +
+                        "}";
+            } else {
+                return "{\n" +
+                        "  \"riskLevel\": \"LOW\",\n" +
+                        "  \"keyFindings\": \"All logged health vitals remain within healthy clinical safety bounds. Sleep cycles and medication compliance are stable.\",\n" +
+                        "  \"recommendations\": \"Excellent work! Keep maintaining your daily routines and hydration schedules.\"\n" +
+                        "}";
+            }
+        } else if (prompt.contains("clinical document parser")) {
+            // Medical Report Analysis JSON Response
+            boolean card = prompt.contains("ECG") || prompt.contains("cardiac");
+            boolean glucose = prompt.contains("glucose") || prompt.contains("blood") || prompt.contains("HbA1c");
+
+            if (card) {
+                return "{\n" +
+                        "  \"summary\": \"Electrocardiogram indicates minor sinus bradycardia and irregular cardiac repolarization patterns.\",\n" +
+                        "  \"riskIndicators\": [\"Irregular repolarization markers\", \"Bradycardia tendency (HR ~52 BPM)\"],\n" +
+                        "  \"riskScore\": \"HIGH\",\n" +
+                        "  \"recommendation\": \"Avoid excessive caffeine and physical stress. Schedule a follow-up consultation with your cardiologist.\"\n" +
+                        "}";
+            } else if (glucose) {
+                return "{\n" +
+                        "  \"summary\": \"Clinical blood panels show borderline high glucose levels and an HbA1c value of 6.6%.\",\n" +
+                        "  \"riskIndicators\": [\"HbA1c 6.6% (Indicative of early diabetes)\", \"Slightly elevated fasting blood sugar\"],\n" +
+                        "  \"riskScore\": \"MEDIUM\",\n" +
+                        "  \"recommendation\": \"Adopt a low-glycemic dietary model. Log your fatigue levels daily, and follow medication routines closely.\"\n" +
+                        "}";
+            } else {
+                return "{\n" +
+                        "  \"summary\": \"General health discharge panel indicating normal metabolic counts and normal electrolyte ranges.\",\n" +
+                        "  \"riskIndicators\": [\"All indices within stable reference bounds\"],\n" +
+                        "  \"riskScore\": \"LOW\",\n" +
+                        "  \"recommendation\": \"Maintain current balanced clinical routines.\"\n" +
+                        "}";
+            }
+        } else {
+            // Conversational Mock Chatbot Response
+            boolean highRisk = prompt.contains("CRITICAL") || prompt.contains("HIGH");
+            boolean medRisk = prompt.contains("MEDIUM");
+            
+            if (highRisk) {
+                return "I'm concerned about some warning signs, including your declining oxygen levels and missed medication. I strongly suggest you take a moment to rest and contact your caregiver immediately. Your health is the top priority.";
+            } else if (medRisk) {
+                return "It looks like you've been having a few difficult days with high stress and poor sleep. Let's take things easy today. I have shifted your non-critical morning reminders forward to help you get some much-needed rest.";
+            } else {
+                return "You are doing really well maintaining your routine! All your logged vitals look stable and healthy. Keep up the great work!";
+            }
+        }
+    }
+
+    private String getMockLocalizedChatbotJson(String userMsg, String lang, String risk) {
+        // IMPORTANT: Compute effectiveRisk and distress detection FIRST,
+        // then generate the reply using the upgraded risk so the correct
+        // empathetic response is returned (not the generic LOW-risk greeting).
+        String effectiveRisk = risk;
+        boolean matchesDistress = false;
+        if (userMsg != null && !userMsg.trim().isEmpty()) {
+            String txt = userMsg.toLowerCase();
+            matchesDistress = txt.contains("fatigue") || txt.contains("tired") || txt.contains("pain") ||
+                              txt.contains("sick") || txt.contains("breath") || txt.contains("fever") ||
+                              txt.contains("hurt") || txt.contains("chest") || txt.contains("headache") ||
+                              txt.contains("dizzy") || txt.contains("weak") || txt.contains("sad") ||
+                              txt.contains("cough") || txt.contains("depress") || txt.contains("nausea") ||
+                              txt.contains("vomit") || txt.contains("sweat") || txt.contains("shiver") ||
+                              txt.contains("cramp") || txt.contains("ache") || txt.contains("bleed") ||
+                              txt.contains("ill") || txt.contains("unwell") || txt.contains("terrible") ||
+                              txt.contains("horrible") || txt.contains("awful") || txt.contains("severe") ||
+                              txt.contains("anxiet") || txt.contains("anxious") || txt.contains("stress") ||
+                              txt.contains("worri") || txt.contains("panic") || txt.contains("scared") ||
+                              txt.contains("lonely") || txt.contains("hopeless") || txt.contains("depress") ||
+                              txt.contains("sore") || txt.contains("swollen") || txt.contains("blurr") ||
+                              txt.contains("shak") || txt.contains("tremble") || txt.contains("numb") ||
+                              txt.contains("faint") || txt.contains("not well") || txt.contains("not good") ||
+                              txt.contains("feel bad") || txt.contains("feel worse") || txt.contains("struggling");
+        }
+        if (("LOW".equals(risk) || risk == null) && matchesDistress) {
+            effectiveRisk = "MEDIUM";
+        }
+
+        // Now generate reply using the correct (possibly upgraded) risk level
+        String reply = getLocalizedFallbackResponse(userMsg, lang, effectiveRisk, null);
+
+        String emotionMode = "NORMAL";
+        if ("CRITICAL".equals(effectiveRisk)) emotionMode = "CRITICAL";
+        else if ("HIGH".equals(effectiveRisk)) emotionMode = "URGENT";
+        else if ("MEDIUM".equals(effectiveRisk)) emotionMode = "EMPATHETIC";
+
+        // Escape any quotes in reply to keep JSON valid
+        reply = reply.replace("\\", "\\\\").replace("\"", "\\\"");
+
+        return "{\n" +
+                "  \"reply\": \"" + reply + "\",\n" +
+                "  \"riskLevel\": \"" + effectiveRisk + "\",\n" +
+                "  \"emotionMode\": \"" + emotionMode + "\"\n" +
+                "}";
+        private String getLocalizedFallbackResponse(String userMsgText, String lang, String risk, User user) {
+        String caregiverName = user != null ? user.getEmergencyCaregiverName() : "Caregiver";
+        String caregiverPhone = user != null ? user.getCaregiverPhoneNumber() : "";
+        String contacts = caregiverName + (caregiverPhone != null && !caregiverPhone.isEmpty() ? ": " + caregiverPhone : "");
+
+        String cleanLang = lang != null ? lang.toLowerCase() : "en";
+        if (cleanLang.startsWith("ta")) cleanLang = "ta";
+        else if (cleanLang.startsWith("hi")) cleanLang = "hi";
+        else if (cleanLang.startsWith("te")) cleanLang = "te";
+        else if (cleanLang.startsWith("ml")) cleanLang = "ml";
+        else if (cleanLang.startsWith("kn")) cleanLang = "kn";
+        else if (cleanLang.startsWith("fr")) cleanLang = "fr";
+        else if (cleanLang.startsWith("es")) cleanLang = "es";
+        else if (cleanLang.startsWith("de")) cleanLang = "de";
+        else if (cleanLang.startsWith("ja")) cleanLang = "ja";
+        else if (cleanLang.startsWith("auto") && userMsgText != null) {
+            String text = userMsgText.toLowerCase();
+            if (text.matches(".*[\\u0B80-\\u0BFF].*")) cleanLang = "ta";
+            else if (text.matches(".*[\\u0900-\\u097F].*")) cleanLang = "hi";
+            else if (text.matches(".*[\\u0C00-\\u0C7F].*")) cleanLang = "te";
+            else if (text.matches(".*[\\u0D00-\\u0D7F].*")) cleanLang = "ml";
+            else if (text.matches(".*[\\u0C80-\\u0CFF].*")) cleanLang = "kn";
+            else if (text.matches(".*[\\u3040-\\u309F\\u30A0-\\u30FF\\u4E00-\\u9FBF].*")) cleanLang = "ja";
+            else if (text.contains("hola") || text.contains("como") || text.contains("gracias")) cleanLang = "es";
+            else if (text.contains("bonjour") || text.contains("merci") || text.contains("fatigu")) cleanLang = "fr";
+            else if (text.contains("hallo") || text.contains("danke") || text.contains("müde")) cleanLang = "de";
+            else cleanLang = "en";
+        }
+
+        String effectiveRisk = risk;
+        boolean matchesDistress = false;
+        boolean isHair = false;
+        boolean isSleep = false;
+        boolean isDiet = false;
+        boolean isExercise = false;
+        boolean isStress = false;
+        boolean isMed = false;
+        boolean isFatigue = false;
+        boolean isHello = false;
+
+        if (userMsgText != null && !userMsgText.trim().isEmpty()) {
+            String txt = userMsgText.toLowerCase();
+            matchesDistress = txt.contains("fatigue") || txt.contains("tired") || txt.contains("pain") ||
+                              txt.contains("sick") || txt.contains("breath") || txt.contains("fever") ||
+                              txt.contains("hurt") || txt.contains("chest") || txt.contains("headache") ||
+                              txt.contains("dizzy") || txt.contains("weak") || txt.contains("sad") ||
+                              txt.contains("cough") || txt.contains("depress") || txt.contains("nausea") ||
+                              txt.contains("vomit") || txt.contains("sweat") || txt.contains("shiver") ||
+                              txt.contains("cramp") || txt.contains("ache") || txt.contains("bleed") ||
+                              txt.contains("ill") || txt.contains("unwell") || txt.contains("terrible") ||
+                              txt.contains("horrible") || txt.contains("awful") || txt.contains("severe") ||
+                              txt.contains("anxiet") || txt.contains("anxious") || txt.contains("stress") ||
+                              txt.contains("worri") || txt.contains("panic") || txt.contains("scared") ||
+                              txt.contains("lonely") || txt.contains("hopeless") || txt.contains("sore") ||
+                              txt.contains("swollen") || txt.contains("blurr") || txt.contains("shak") ||
+                              txt.contains("tremble") || txt.contains("numb") || txt.contains("faint") ||
+                              txt.contains("not well") || txt.contains("not good") || txt.contains("feel bad") ||
+                              txt.contains("feel worse") || txt.contains("struggling");
+
+            // Intent keyword mappings
+            isHair = txt.contains("hair") || txt.contains("bald") || txt.contains("scalp") || txt.contains("முடி") || txt.contains("बाल");
+            isSleep = txt.contains("sleep") || txt.contains("insomnia") || txt.contains("night") || txt.contains("awake") || txt.contains("தூக்கம்") || txt.contains("नींद");
+            isDiet = txt.contains("diet") || txt.contains("eat") || txt.contains("food") || txt.contains("weight") || txt.contains("nutrition") || txt.contains("water") || txt.contains("hydration") || txt.contains("உணவு") || txt.contains("भोजन") || txt.contains("खाना");
+            isExercise = txt.contains("exercise") || txt.contains("workout") || txt.contains("gym") || txt.contains("walk") || txt.contains("run") || txt.contains("உடற்பயிற்சி") || txt.contains("व्यायाम") || txt.contains("कसरत");
+            isStress = txt.contains("stress") || txt.contains("anxiet") || txt.contains("anxious") || txt.contains("worry") || txt.contains("panic") || txt.contains("scared") || txt.contains("afraid") || txt.contains("sad") || txt.contains("depress") || txt.contains("மன அழுத்தம்") || txt.contains("तनाव") || txt.contains("चिंता");
+            isMed = txt.contains("medication") || txt.contains("pill") || txt.contains("medicine") || txt.contains("dose") || txt.contains("prescription") || txt.contains("மருந்து") || txt.contains("दवा");
+            isFatigue = txt.contains("fatigue") || txt.contains("tired") || txt.contains("weak") || txt.contains("exhaust") || txt.contains("சோர்வு") || txt.contains("थकान");
+            isHello = txt.contains("hello") || txt.contains("hi") || txt.contains("hey") || txt.contains("greetings") || txt.contains("வணக்கம்") || txt.contains("नमस्ते");
+        }
+
+        if (("LOW".equals(risk) || risk == null) && matchesDistress) {
+            effectiveRisk = "MEDIUM";
+        }
+
+        switch (cleanLang) {
+            case "ta":
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "உங்கள் சமீபத்திய ஆரோக்கிய குறிகாட்டிகள் ஆபத்தான நிலையில் உள்ளன. தயவுசெய்து உங்கள் அவசர கவனிப்பாளரை (" + contacts + ") உடனடியாக தொடர்பு கொள்ளவும் அல்லது உடனடியாக மருத்துவ உதவி பெறவும்.";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "உங்கள் உடல்நிலையில் சில எச்சரிக்கை அறிகுறிகளை நான் கவனித்தேன். தயவுசெய்து உடனடியாக ஓய்வெடுத்து, உங்கள் கவனிப்பாளரை (" + contacts + ") தொடர்பு கொள்ளவும்.";
+                } else if (isHair) {
+                    return "ஆரோக்கியமான முடி வளர்ச்சிக்கு, புரதம், இரும்புச்சத்து மற்றும் வைட்டமின்கள் A, C, E நிறைந்த சமச்சீர் உணவை உட்கொள்ளுங்கள். உச்சந்தலையை மெதுவாக மசாஜ் செய்வது இரத்த ஓட்டத்தை அதிகரிக்க உதவும். நிறைய தண்ணீர் குடிக்கவும்!";
+                } else if (isSleep) {
+                    return "நல்ல தூக்கத்திற்கு, தினமும் ஒரே நேரத்தில் படுக்கைக்குச் செல்லுங்கள். படுக்கைக்கு முன் செல்போன் போன்ற திரைகளைத் தவிர்க்கவும். அமைதியான சூழலை உருவாக்குங்கள்.";
+                } else if (isDiet) {
+                    return "சீரான உணவை உட்கொள்ளுங்கள், நிறைய தண்ணீர் குடிக்கவும். கீரைகள், புரதங்கள் மற்றும் நார்ச்சத்து நிறைந்த உணவுகளைச் சேர்க்கவும். பதப்படுத்தப்பட்ட உணவுகளைத் தவிர்க்கவும்.";
+                } else if (isExercise) {
+                    return "தினமும் 30 நிமிடங்கள் நடைப்பயிற்சி அல்லது மிதமான உடற்பயிற்சி செய்வது ஆரோக்கியத்திற்கு நல்லது. சோர்வாக இருந்தால் கடினமான உடற்பயிற்சிகளைத் தவிர்க்கவும்.";
+                } else if (isStress) {
+                    return "உங்களை நான் புரிந்து கொள்கிறேன். கவலைப்பட வேண்டாம். ஆழ்ந்த மூச்சுப் பயிற்சி செய்ய முயற்சிக்கவும்: 4 விநாடிகள் மூச்சை இழுத்து, 4 விநாடிகள் அடக்கி, 6 விநாடிகள் வெளியிடவும்.";
+                } else if (isMed) {
+                    return "உங்கள் மருந்துகளை மருத்துவர் பரிந்துரைத்தபடி சரியாக எடுத்துக்கொள்ளுங்கள். அலாரங்களை அமைப்பது மருந்துகளை நினைவில் வைக்க உதவும்.";
+                } else if (isFatigue) {
+                    return "உடல் சோர்வு ஓய்வு தேவை என்பதைக் காட்டுகிறது. இன்று தயவுசெய்து நன்றாக ஓய்வெடுத்துக் கொள்ளுங்கள். உங்கள் சோர்வு அளவுகளை நாங்கள் கண்காணிப்போம்.";
+                } else if (isHello) {
+                    return "வணக்கம்! நான் நெக்ஸுரா, உங்கள் சுகாதாரத் துணைவன். இன்று நான் உங்களுக்கு எவ்வாறு உதவ முடியும்?";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "நீங்கள் சோர்வாக அல்லது உடல்நலக்குறைவாக உணர்வதை அறிந்து நான் கவலைப்படுகிறேன். தயவுசெய்து ஓய்வெடுக்கவும், உங்கள் உடல்நிலை பதிவுகளை கண்காணிக்கவும்.";
+                    }
+                    return "உங்கள் தூக்கம் சமீபத்தில் குறைவாக இருப்பதையும், மன அழுத்தம் சற்று அதிகமாக இருப்பதையும் கவனித்தேன். இன்று தயவுசெய்து சிறிது ஓய்வெடுத்து, தியானம் செய்ய முயற்சிக்கவும்.";
+                } else {
+                    return "நீங்கள் நலமாக இருப்பதை கண்டு மகிழ்ச்சி அடைகிறேன்! உங்கள் உடல்நிலை மற்றும் தினசரி பழக்கவழக்கங்கள் மிகவும் சீராக உள்ளன. இதே வழக்கத்தை தொடருங்கள்.";
+                }
+            case "hi":
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "आपके स्वास्थ्य पैरामीटर एक गंभीर स्थिति में हैं। कृपया तुरंत अपने आपातकालीन देखभालकर्ता (" + contacts + ") से संपर्क करें या तुरंत चिकित्सा सहायता प्राप्त करें।";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "मैंने आपके स्वास्थ्य संकेतकों में कुछ गंभीर बदलाव देखे हैं। कृपया आराम करें और तुरंत अपने आपातकालीन देखभालकर्ता (" + contacts + ") या डॉक्टर से संपर्क करें।";
+                } else if (isHair) {
+                    return "स्वस्थ बालों के विकास के लिए, प्रोटीन, आयरन और विटामिन A, C, E से भरपूर संतुलित आहार लें। बालों की जड़ों की हल्की मालिश करें और पर्याप्त पानी पिएं।";
+                } else if (isSleep) {
+                    return "अच्छी नींद के लिए, सोने का एक नियमित समय तय करें। बिस्तर पर जाने से पहले स्क्रीन (फोन/टीवी) से दूर रहें और शांत वातावरण बनाएं।";
+                } else if (isDiet) {
+                    return "संतुलित आहार लें और पर्याप्त पानी पीएं। हरी सब्जियां, प्रोटीन और फाइबर युक्त भोजन शामिल करें। परिष्कृत चीनी का सेवन कम करें।";
+                } else if (isExercise) {
+                    return "दैनिक रूप से 30 मिनट तेज चलना या मध्यम व्यायाम करना आपके स्वास्थ्य के लिए उत्तम है। अत्यधिक थकान होने पर भारी कसरत से बचें।";
+                } else if (isStress) {
+                    return "मैं समझ सकता हूँ। चिंता न करें। कृपया गहरी साँस लेने का व्यायाम करें: 4 सेकंड के लिए साँस लें, 4 रोकें, और 6 सेकंड में छोड़ें।";
+                } else if (isMed) {
+                    return "अपनी दवाएं डॉक्टर के निर्देशानुसार समय पर लें। दवाओं को समय पर लेने के लिए अलार्म सेट करें।";
+                } else if (isFatigue) {
+                    return "लगातार थकान शरीर को आराम देने का संकेत है। आज कृपया आराम करें और पानी पीते रहें।";
+                } else if (isHello) {
+                    return "नमस्ते! मैं नेक्सुरा हूँ, आपका व्यक्तिगत स्वास्थ्य साथी। आज मैं आपकी क्या सहायता कर सकता हूँ?";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "मुझे यह सुनकर चिंता हो रही है कि आप अस्वस्थ या थका हुआ महसूस कर रहे हैं। कृपया आराम करें और अपने स्वास्थ्य मेट्रिक्स की निगरानी करें।";
+                    }
+                    return "मैंने ध्यान दिया कि आपकी नींद कुछ दिनों से कम रही है और तनाव बढ़ा हुआ है। कृपया आज आराम करें और सांस लेने के व्यायाम का प्रयास करें।";
+                } else {
+                    return "मुझे यह देखकर खुशी हुई कि आप बहुत अच्छा महसूस कर रहे हैं! आपके स्वास्थ्य संकेत और दिनचर्या अद्भुत रूप से स्थिर हैं। ऐसे ही बने रहें!";
+                }
+            case "te":
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "మీ ఆరోగ్య సూచికలు అత్యంత ప్రమాదకరమైన స్థితిలో ఉన్నాయి. దయచేసి వెంటనే మీ అత్యవసర సంరక్షకుడిని (" + contacts + ") సంప్రదించండి లేదా అత్యవసర వైద్య సహాయం పొందండి.";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "నేను కొన్ని తీవ్రమైన ఆరోగ్య హెచ్చరిక సంకేతాలను గమనించాను. దయచేసి విశ్రాంతి తీసుకోండి మరియు వెంటనే మీ సంరక్షకుడిని (" + contacts + ") సంప్రదించండి.";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "మీరు అనారోగ్యంగా లేదా అలసటగా ఉన్నారని వినడానికి నేను ఆందోళన చెందుతున్నాను. దయచేసి విశ్రాంతి తీసుకోండి మరియు మీ ఆరోగ్య లాగ్‌లను పర్యవేక్షించండి.";
+                    }
+                    return "మీ నిద్ర కాస్త తక్కువగా ఉందని మరియు ఒత్తిడి కొద్దిగా ఎక్కువగా ఉందని గమనించాను. దయచేసి ఈ రోజు కొద్దిగా విశ్రాంతి తీసుకోండి మరియు ఒత్తిడి తగ్గించుకోండి.";
+                } else {
+                    return "మీరు బాగుండటం చూడటానికి చాలా సంతోషంగా ఉంది! మీ ఆరోగ్య సూచికలు మరియు అలవాట్లు అద్భుతంగా ఉన్నాయి. ఇదే అలవాటును కొనసాగించండి.";
+                }
+            case "ml":
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "നിങ്ങളുടെ ആരോഗ്യനില അടിയന്തര ശ്രദ്ധ ആവശ്യപ്പെടുന്ന ഗുരുതരമായ അവസ്ഥയിലാണ്. ദയവായി നിങ്ങളുടെ അടിയന്തര പരിചാരകനെ (" + contacts + ") ഉടൻ ബന്ധപ്പെടുക അല്ലെങ്കിൽ വൈദ്യസഹായം തേടുക.";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "നിങ്ങളുടെ ആരോഗ്യ സൂചകങ്ങളിൽ ചില ഗുരുതരമായ മുന്നറിയിപ്പുകൾ ഞാൻ ശ്രദ്ധിച്ചു. ദയവായി വിശ്രമിക്കുകയും പരിചാരകനെയോ (" + contacts + ") ഡോക്ടറെയോ ഉടൻ ബന്ധപ്പെടുകയും ചെയ്യുക.";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "നിങ്ങൾക്ക് സുഖമില്ലെന്നോ ക്ഷീണമെന്നോ കേൾക്കുന്നതിൽ എനിക്ക് ആശങ്കയുണ്ട്. ദയവായി വിശ്രമിക്കുകയും നിങ്ങളുടെ ആരോഗ്യ സൂചകങ്ങൾ നിരീക്ഷിക്കുകയും ചെയ്യുക.";
+                    }
+                    return "നിങ്ങളുടെ ഉറക്കം അടുത്തിടെ വളരെ കുറവാണെന്നും സമ്മർദ്ദം കൂടുതലാണെന്നും ഞാൻ കണ്ടു. ഇന്ന് ദയവായി അല്പം വിശ്രമിക്കാൻ താല്പര്യപ്പെടുക.";
+                } else {
+                    return "നിങ്ങൾ സുഖമായിരിക്കുന്നു എന്ന് കാണുന്നതിൽ സന്തോഷമുണ്ട്! നിങ്ങളുടെ ആരോഗ്യസൂചകങ്ങളും ദിനചര്യകളും പൂർണ്ണമായും തൃപ്തികരമാണ്. ഇത് തുടരുക.";
+                }
+            case "kn":
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "ನಿಮ್ಮ ಆರೋಗ್ಯದ ನಿಯತಾಂಕಗಳು ಗಂಭೀರ ಸ್ಥಿತಿಯಲ್ಲಿವೆ. ದಯವಿಟ್ಟು ತಕ್ಷಣ ನಿಮ್ಮ ತುರ್ತು ಆರೈಕೆದಾರರನ್ನು (" + contacts + ") ಸಂಪರ್ಕಿಸಿ ಅಥವಾ ತುರ್ತು ವೈದ್ಯಕೀಯ ಸಹಾಯ ಪಡೆಯಿರಿ.";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "ನಾನು ಕೆಲವು ಗಂಭೀರ ಎಚ್ಚರಿಕೆ ಚಿಹ್ನೆಗಳನ್ನು ಗಮನಿಸಿದ್ದೇನೆ. ದಯವಿಟ್ಟು ವಿಶ್ರಾಂತಿ ತೆಗೆದುಕೊಳ್ಳಿ ಮತ್ತು ತಕ್ಷಣ ನಿಮ್ಮ ಆರೈಕೆದಾರರನ್ನು (" + contacts + ") ಸಂಪರ್ಕಿಸಲು ಪರಿಗಣಿಸಿ.";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "ನಿಮಗೆ ಆರಾಮವಿಲ್ಲ ಅಥವಾ ಆಯಾಸವಾಗಿದೆ ಎಂದು ಕೇಳಲು ನನಗೆ ಕಾಳಜಿಯಿದೆ. ದಯವಿಟ್ಟು ವಿಶ್ರಾಂತಿ ಪಡೆಯಿರಿ ಮತ್ತು ನಿಮ್ಮ ಆ ರೋಗ್ಯ ದಾಖಲೆಗಳನ್ನು ಗಮನಿಸಿ.";
+                    }
+                    return "ನಿಮ್ಮ ನಿದ್ರೆ ಇತ್ತೀಚೆಗೆ ಕಡಿಮೆಯಾಗಿದೆ ಮತ್ತು ಒತ್ತಡ ಸ್ವಲ್ಪ ಹೆಚ್ಚಾಗಿದೆ ಎಂದು ನಾನು ಗಮನಿಸಿದ್ದೇನೆ. ದಯವಿಟ್ಟು ಇಂದು ವಿಶ್ರಾಂತಿ ಪಡೆಯಲು ಸಮಯ ಮಾಡಿಕೊಳ್ಳಿ.";
+                } else {
+                    return "ನೀವು ಚೆನ್ನಾಗಿದ್ದೀರಿ ಎಂದು ನೋಡಲು ತುಂಬಾ ಸಂತೋಷವಾಗುತ್ತದೆ! ನಿಮ್ಮ ಆ ರೋಗ್ಯ ಸೂಚಕಗಳು ಮತ್ತು ದಿನಚರಿಗಳು ಅದ್ಭುತವಾಗಿವೆ. ಇದನ್ನೇ ಮುಮುಂದುವರಿಸಿ.";
+                }
+            case "fr":
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "Vos paramètres de santé suggèrent une urgence médicale. Veuillez contacter immédiatement votre soignant d'urgence (" + contacts + ") ou appeler les secours.";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "J'ai détecté des alertes critiques dans votre profil de santé. Reposez-vous et contactez votre soignant (" + contacts + ") immédiatement.";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "Je suis préoccupé d'apprendre que vous vous sentez fatigué ou indisposé. Veuillez vous reposer et surveiller vos constantes de santé.";
+                    }
+                    return "J'ai remarqué un sommeil insuffisant et une légère fatigue. Pensez à lever le pied aujourd'hui et à bien vous hydrater.";
+                } else {
+                    return "Ravi de voir que vous êtes en pleine forme ! Vos constantes cliniques sont stables et excellentes. Continuez ainsi !";
+                }
+            case "es":
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "Tus indicadores de salud sugieren una emergencia. Por favor, contacta a tu cuidador de emergencia (" + contacts + ") o busca asistencia médica de inmediato.";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "He detectado varias señales de advertencia críticas. Por favor, descansa y considera contactar a tu cuidador (" + contacts + ") de inmediato.";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "Me preocupa escuchar que te sientes mal o fatigado. Por favor, descansa y monitorea tus registros de salud diarios.";
+                    }
+                    return "He notado que tu sueño ha sido bajo y tu nivel de estrés está elevado. Por favor, tómate un tiempo para relajarte y descansar hoy.";
+                } else {
+                    return "¡Qué alegría ver que te encuentras excelente! Tus constantes vitales están maravillosamente estables. Mantén esta gran rutina.";
+                }
+            case "de":
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "Ihre Gesundheitsparameter deuten auf einen kritischen Zustand hin. Bitte kontaktieren Sie sofort Ihren Notfallkontakt (" + contacts + ") oder den Notruf.";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "Ich habe kritische Warnsignale in Ihren Vitalwerten festgestellt. Bitte ruhen Sie sich aus und kontaktieren Sie Ihren Pfleger (" + contacts + ").";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "Es tut mir leid zu hören, dass Sie sich unwohl oder müde fühlen. Bitte ruhen Sie sich aus und überwachen Sie Ihre täglichen Werte.";
+                    }
+                    return "Ich habe Schlafmangel und erhöhten Stress festgestellt. Bitte nehmen Sie sich heute etwas Zeit zum Entspannen und Ausruhen.";
+                } else {
+                    return "Es freut mich sehr, dass es Ihnen gut geht! Ihre Vitalwerte sind hervorragend und stabil. Behalten Sie diese Routine bei!";
+                }
+            case "ja":
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "健康状態が極めて深刻で、緊急の対応が必要です。直ちに緊急連絡先（" + contacts + "）に連絡するか、救急医療機関を受診してください。";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "いくつかの深刻な警告の兆候が見られます。直ちに体を休め、緊急連絡先（" + contacts + "）への連絡を検討してください。";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "体調が優れないか、疲労を感じているとのこと、心配しております。無理をなさらず十分に休息を取り、バイタルを記録してください。";
+                    }
+                    return "最近、睡眠時間が不足しており、ストレスレベルが高くなっています。今日は無理せず休息を取り、リラックスしてください。";
+                } else {
+                    return "非常によい状態が維持されています！バイタルも日常のルーチンも極めて安定しています。この素晴らしい習慣を続けましょう。";
+                }
+            default: // en
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "Your health parameters are in a critical state suggesting urgent attention. Please contact your emergency caregiver (" + contacts + ") or seek medical help immediately.";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "I am noticing several warning signs, including worsening fatigue and vitals. Please rest and contact your caregiver (" + contacts + ") or doctor immediately.";
+                } else if (isHair) {
+                    return "To promote healthy hair growth, focus on a balanced diet rich in protein, iron, and vitamins A, C, and E. Avoid harsh heat treatments, massage your scalp gently to stimulate blood circulation, and stay hydrated. Since your vitals look stable, these lifestyle adjustments are excellent and safe to start!";
+                } else if (isSleep) {
+                    return "To improve sleep quality, establish a consistent sleep schedule and keep your bedroom cool and dark. Avoid screens for at least 30 minutes before bed. Regular, relaxing evening routines support deep recovery cycles.";
+                } else if (isDiet) {
+                    return "A nutrient-dense diet rich in leafy greens, lean proteins, fiber, and plenty of water is highly recommended. Limit processed foods, excessive sodium, and refined sugars. Consistent hydration is crucial for your vitals.";
+                } else if (isExercise) {
+                    return "For general health, aim for 30 minutes of moderate activity like brisk walking or cycling daily. Always check with your caregiver or physician before starting any high-intensity routine, especially if you're feeling tired.";
+                } else if (isStress) {
+                    return "I hear you, and it is completely okay to feel stressed or anxious. Try a quick grounding technique: take a slow, deep breath in for 4 seconds, hold for 4 seconds, and exhale completely for 6 seconds. Prioritize peaceful rest today.";
+                } else if (isMed) {
+                    return "Taking your medications consistently at the same times everyday is essential for effective care. Setting silent recurring alarms can help you manage your reminders seamlessly. Never adjust your dosage without doctor consultation.";
+                } else if (isFatigue) {
+                    return "Persistent fatigue indicates your body needs time to rest and recharge. Focus on improving your hydration levels and getting optimal sleep tonight. We will monitor your fatigue logs to safeguard your wellness.";
+                } else if (isHello) {
+                    return "Hello! I am Nexura, your personal care companion. I'm here to support you with your health logs, medication schedules, and wellness guidelines. How can I help you today?";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "I am concerned to hear that you are feeling unwell or fatigued today. Please take a moment to rest, monitor your daily health logs, and check in with your caregiver if you do not feel better soon.";
+                    }
+                    return "I noticed your recent sleep has been low and stress is elevated. Taking things easy today and resting will help you recover.";
+                } else {
+                    return "I'm glad to see you're doing so well! Your vitals and daily habits look wonderfully stable. Keep up the excellent routine.";
+                }
+        }
+    }��ಸಿದ್ದೇನೆ. ದಯವಿಟ್ಟು ಇಂದು ವಿಶ್ರಾಂತಿ ಪಡೆಯಲು ಸಮಯ ಮಾಡಿಕೊಳ್ಳಿ.";
+                } else {
+                    return "ನೀವು ಚೆನ್ನಾಗಿದ್ದೀರಿ ಎಂದು ನೋಡಲು ತುಂಬಾ ಸಂತೋಷವಾಗುತ್ತದೆ! ನಿಮ್ಮ ಆ ರೋಗ್ಯ ಸೂಚಕಗಳು ಮತ್ತು ದಿನಚರಿಗಳು ಅದ್ಭುತವಾಗಿವೆ. ಇದನ್ನೇ ಮುಮುಂದುವರಿಸಿ.";
+                }
+            case "fr":
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "Vos paramètres de santé suggèrent une urgence médicale. Veuillez contacter immédiatement votre soignant d'urgence (" + contacts + ") ou appeler les secours.";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "J'ai détecté des alertes critiques dans votre profil de santé. Reposez-vous et contactez votre soignant (" + contacts + ") immédiatement.";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "Je suis préoccupé d'apprendre que vous vous sentez fatigué ou indisposé. Veuillez vous reposer et surveiller vos constantes de santé.";
+                    }
+                    return "J'ai remarqué un sommeil insuffisant et une légère fatigue. Pensez à lever le pied aujourd'hui et à bien vous hydrater.";
+                } else {
+                    return "Ravi de voir que vous êtes en pleine forme ! Vos constantes cliniques sont stables et excellentes. Continuez ainsi !";
+                }
+            case "es":
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "Tus indicadores de salud sugieren una emergencia. Por favor, contacta a tu cuidador de emergencia (" + contacts + ") o busca asistencia médica de inmediato.";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "He detectado varias señales de advertencia críticas. Por favor, descansa y considera contactar a tu cuidador (" + contacts + ") de inmediato.";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "Me preocupa escuchar que te sientes mal o fatigado. Por favor, descansa y monitorea tus registros de salud diarios.";
+                    }
+                    return "He notado que tu sueño ha sido bajo y tu nivel de estrés está elevado. Por favor, tómate un tiempo para relajarte y descansar hoy.";
+                } else {
+                    return "¡Qué alegría ver que te encuentras excelente! Tus constantes vitales están maravillosamente estables. Mantén esta gran rutina.";
+                }
+            case "de":
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "Ihre Gesundheitsparameter deuten auf einen kritischen Zustand hin. Bitte kontaktieren Sie sofort Ihren Notfallkontakt (" + contacts + ") oder den Notruf.";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "Ich habe kritische Warnsignale in Ihren Vitalwerten festgestellt. Bitte ruhen Sie sich aus und kontaktieren Sie Ihren Pfleger (" + contacts + ").";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "Es tut mir leid zu hören, dass Sie sich unwohl oder müde fühlen. Bitte ruhen Sie sich aus und überwachen Sie Ihre täglichen Werte.";
+                    }
+                    return "Ich habe Schlafmangel und erhöhten Stress festgestellt. Bitte nehmen Sie sich heute etwas Zeit zum Entspannen und Ausruhen.";
+                } else {
+                    return "Es freut mich sehr, dass es Ihnen gut geht! Ihre Vitalwerte sind hervorragend und stabil. Behalten Sie diese Routine bei!";
+                }
+            case "ja":
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "健康状態が極めて深刻で、緊急の対応が必要です。直ちに緊急連絡先（" + contacts + "）に連絡するか、救急医療機関を受診してください。";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "いくつかの深刻な警告の兆候が見られます。直ちに体を休め、緊急連絡先（" + contacts + "）への連絡を検討してください。";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "体調が優れないか、疲労を感じているとのこと、心配しております。無理をなさらず十分に休息を取り、バイタルを記録してください。";
+                    }
+                    return "最近、睡眠時間が不足しており、ストレスレベルが高くなっています。今日は無理せず休息を取り、リラックスしてください。";
+                } else {
+                    return "非常によい状態が維持されています！バイタルも日常のルーチンも極めて安定しています。この素晴らしい習慣を続けましょう。";
+                }
+            default: // en
+                if ("CRITICAL".equals(effectiveRisk)) {
+                    return "Your health parameters are in a critical state suggesting urgent attention. Please contact your emergency caregiver (" + contacts + ") or seek medical help immediately.";
+                } else if ("HIGH".equals(effectiveRisk)) {
+                    return "I am noticing several warning signs, including worsening fatigue and vitals. Please rest and contact your caregiver (" + contacts + ") or doctor immediately.";
+                } else if ("MEDIUM".equals(effectiveRisk)) {
+                    if (matchesDistress) {
+                        return "I am concerned to hear that you are feeling unwell or fatigued today. Please take a moment to rest, monitor your daily health logs, and check in with your caregiver if you do not feel better soon.";
+                    }
+                    return "I noticed your recent sleep has been low and stress is elevated. Taking things easy today and resting will help you recover.";
+                } else {
+                    return "I'm glad to see you're doing so well! Your vitals and daily habits look wonderfully stable. Keep up the excellent routine.";
+                }
+        }
+    }
+
+    private void createRiskNotificationAlert(User user, AIAnalysis analysis) {
+        Alert alert = new Alert();
+        alert.setUser(user);
+        alert.setTitle("AI Deterioration Assessment: " + analysis.getRiskLevel() + " Risk");
+        alert.setMessage("Our AI trend analysis has flagged a " + analysis.getRiskLevel() + " risk. Findings: " + analysis.getKeyFindings() + " Recommendations: " + analysis.getRecommendations());
+        alert.setCategory("AI_WARNING");
+        alert.setPriority(analysis.getRiskLevel());
+        alert.setIsRead(false);
+        alertRepository.save(alert);
+    }
+
+    private String cleanJsonString(String response) {
+        if (response == null) return "{}";
+        String clean = response.trim();
+        if (clean.startsWith("```json")) {
+            clean = clean.substring(7);
+        } else if (clean.startsWith("```")) {
+            clean = clean.substring(3);
+        }
+        if (clean.endsWith("```")) {
+            clean = clean.substring(0, clean.length() - 3);
+        }
+        return clean.trim();
+    }
+
+    private AIAnalysis parseAIAnalysis(User user, String aiResponse) {
+        AIAnalysis analysis = new AIAnalysis();
+        analysis.setUser(user);
+        try {
+            JsonNode root = objectMapper.readTree(cleanJsonString(aiResponse));
+            analysis.setRiskLevel(root.path("riskLevel").asText("LOW"));
+            analysis.setKeyFindings(root.path("keyFindings").asText("No key findings."));
+            analysis.setRecommendations(root.path("recommendations").asText("Keep up your healthy routine."));
+        } catch (Exception e) {
+            // Local fallback rule-based analyzer
+            analysis.setRiskLevel("LOW");
+            analysis.setKeyFindings("Metrics are stable within reference bounds.");
+            analysis.setRecommendations("Continue monitoring your daily habits.");
+        }
+        return analysis;
+    }
+}

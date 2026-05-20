@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexura - Medication Schedules</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <div id="sidebar-container"></div>
+
+        <!-- Main Workspace -->
+        <div class="main-content">
+            <!-- Header section -->
+            <div class="header-container">
+                <div class="header-title">
+                    <h1>Medication Scheduler & Adherence</h1>
+                    <p>Register schedules, track taken compliance rates, and let the AI automatically adjust notification timings.</p>
+                </div>
+                <div class="profile-widget">
+                    <div class="profile-avatar" id="user-avatar">PT</div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 15px;" id="profile-name">Patient</div>
+                        <div style="font-size: 13px; color: var(--text-muted);" id="profile-role">Companion Portal</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Layout: Form & Stats vs Active List -->
+            <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 24px; align-items: start;">
+                <!-- Add Medication Column -->
+                <div style="display:flex; flex-direction:column; gap:24px;">
+                    <!-- Ingestion Stats Card -->
+                    <div class="card" style="text-align: center;">
+                        <div class="card-header">
+                            <span class="card-title">Weekly Compliance</span>
+                            <span style="font-size:20px;">📊</span>
+                        </div>
+                        <div style="font-size: 48px; font-weight:800; color: var(--primary); margin: 12px 0;" id="medications-compliance-val">--%</div>
+                        <p style="font-size: 13px; color: var(--text-secondary); line-height: 1.5;">Ingestion consistency evaluated across your active schedule over the past 7 days.</p>
+                    </div>
+
+                    <!-- Add Form Card -->
+                    <div class="card">
+                        <div class="card-header" style="margin-bottom: 20px;">
+                            <span class="card-title" id="form-title">Schedule Medication</span>
+                            <span style="font-size: 20px;">💊</span>
+                        </div>
+
+                        <form id="medication-form" onsubmit="saveMedication(event)">
+                            <input type="hidden" id="medication-id">
+                            
+                            <div class="form-group">
+                                <label for="medName">Medication Name</label>
+                                <input type="text" id="medName" class="form-input" placeholder="e.g. Lisinopril" required>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="medDosage">Dosage</label>
+                                <input type="text" id="medDosage" class="form-input" placeholder="e.g. 10mg" required>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="medTime">Scheduled Daily Time</label>
+                                <input type="time" id="medTime" class="form-input" required>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="medFrequency">Frequency</label>
+                                <select id="medFrequency" class="form-input" required style="width:100%;">
+                                    <option value="DAILY">Daily</option>
+                                    <option value="TWICE_DAILY">Twice Daily</option>
+                                    <option value="WEEKLY">Weekly</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="medNotes">Intake Notes</label>
+                                <input type="text" id="medNotes" class="form-input" placeholder="e.g. Take with food, avoid alcohol">
+                            </div>
+
+                            <div style="display:flex; gap:10px; margin-top:10px;">
+                                <button type="submit" class="btn btn-primary" style="flex-grow:1;" id="save-btn">Add Schedule</button>
+                                <button type="button" class="btn btn-secondary" style="display:none;" id="cancel-edit-btn" onclick="resetMedicationForm()">Cancel</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Active Medications Grid Card -->
+                <div class="card" style="min-height: 480px;">
+                    <div class="card-header" style="border-bottom: 1px solid var(--border-color); padding-bottom: 12px; margin-bottom: 20px;">
+                        <span class="card-title">Active Medication Plan</span>
+                        <button class="btn btn-secondary" onclick="adaptAllReminders()" style="font-size:12px; padding: 6px 12px;">AI Adapt Timing</button>
+                    </div>
+
+                    <div id="medications-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px;">
+                        <!-- Medication cards injected dynamically via medications.js -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/app.js"></script>
+    <script src="js/medications.js"></script>
+</body>
+</html>

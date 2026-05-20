@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexura - Health Logs</title>
+    <link rel="stylesheet" href="css/style.css">
+    <!-- Chart.js for data visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <div id="sidebar-container"></div>
+
+        <!-- Main Workspace -->
+        <div class="main-content">
+            <!-- Header section -->
+            <div class="header-container">
+                <div class="header-title">
+                    <h1>Physiological Health Logs</h1>
+                    <p>Track your daily vitals, stress indicators, and physical fatigue levels.</p>
+                </div>
+                <div class="profile-widget">
+                    <div class="profile-avatar" id="user-avatar">PT</div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 15px;" id="profile-name">Patient</div>
+                        <div style="font-size: 13px; color: var(--text-muted);" id="profile-role">Companion Portal</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Two Column Layout: Logger Form vs Vitals Visualizer -->
+            <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 24px; align-items: start;">
+                <!-- Log Vitals Form Card -->
+                <div class="card">
+                    <div class="card-header" style="margin-bottom: 20px;">
+                        <span class="card-title">Log Daily Vitals</span>
+                        <span style="font-size: 20px;">❤️</span>
+                    </div>
+
+                    <form id="health-log-form" onsubmit="saveHealthVitals(event)">
+                        <div class="form-group">
+                            <label for="heartRate">Heart Rate (BPM)</label>
+                            <input type="number" id="heartRate" class="form-input" placeholder="e.g. 72" required min="30" max="220">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="bloodPressure">Blood Pressure (Systolic/Diastolic)</label>
+                            <input type="text" id="bloodPressure" class="form-input" placeholder="e.g. 120/80" required pattern="^\d{2,3}\/\d{2,3}$">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="oxygenLevel">Oxygen Saturation (SpO2 %)</label>
+                            <input type="number" id="oxygenLevel" class="form-input" placeholder="e.g. 98" required min="50" max="100">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="bodyTemperature">Body Temperature (°C)</label>
+                            <input type="number" id="bodyTemperature" class="form-input" placeholder="e.g. 36.6" required step="0.1" min="30" max="45">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="stressLevel">Stress Level (1-10)</label>
+                            <input type="range" id="stressLevel" min="1" max="10" value="5" style="width: 100%; cursor: pointer;" oninput="document.getElementById('stress-val').innerText = this.value">
+                            <div style="text-align: right; font-size: 13px; font-weight:600; color: var(--primary); margin-top:4px;">Level: <span id="stress-val">5</span>/10</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="mood">Current Mood</label>
+                            <select id="mood" class="form-input" required style="width:100%;">
+                                <option value="Calm">Calm</option>
+                                <option value="Happy">Happy</option>
+                                <option value="Anxious">Anxious</option>
+                                <option value="Energetic">Energetic</option>
+                                <option value="Tired">Tired</option>
+                                <option value="Stressed">Stressed</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="fatigueLevel">Fatigue Level</label>
+                            <select id="fatigueLevel" class="form-input" required style="width:100%;">
+                                <option value="NONE">None</option>
+                                <option value="MILD">Mild</option>
+                                <option value="MODERATE">Moderate</option>
+                                <option value="SEVERE">Severe</option>
+                            </select>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 10px;">Save Vitals</button>
+                    </form>
+                </div>
+
+                <!-- Vitals Graphic Trends Card -->
+                <div class="card" style="display: flex; flex-direction: column; min-height: 520px;">
+                    <div class="card-header">
+                        <span class="card-title">Vitals Historical Trends</span>
+                        <span style="font-size: 14px; color: var(--text-secondary);">Interactive Graph (Chart.js)</span>
+                    </div>
+                    <div style="height: 400px; width: 100%; flex-grow: 1;">
+                        <canvas id="detailedVitalsChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Vitals Log History Grid Table -->
+            <div class="card">
+                <div class="card-header" style="margin-bottom: 16px;">
+                    <span class="card-title">Chronological Log History</span>
+                    <span style="font-size: 20px;">📜</span>
+                </div>
+                <div class="history-table-container">
+                    <table class="history-table">
+                        <thead>
+                            <tr>
+                                <th>Logged Date & Time</th>
+                                <th>Heart Rate</th>
+                                <th>Blood Pressure</th>
+                                <th>SpO2</th>
+                                <th>Temp</th>
+                                <th>Stress</th>
+                                <th>Mood</th>
+                                <th>Fatigue</th>
+                            </tr>
+                        </thead>
+                        <tbody id="vitals-history-rows">
+                            <!-- Rows injected dynamically via health.js -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts Integration -->
+    <script src="js/app.js"></script>
+    <script src="js/health.js"></script>
+</body>
+</html>
