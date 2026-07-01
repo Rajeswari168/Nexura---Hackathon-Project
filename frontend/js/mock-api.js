@@ -568,15 +568,6 @@ function recalculateRisk() {
     }
 }
 
-// ─── Override fetchWithAuth globally ─────────────────────────────────────────
-
-// Store original function reference
-const _originalFetchWithAuth = window.fetchWithAuth;
-
-window.fetchWithAuth = async function(endpoint, options = {}) {
-    return mockFetchWithAuth(endpoint, options);
-};
-
 // ─── Initialize Mock Environment ─────────────────────────────────────────────
 
 (function initMock() {

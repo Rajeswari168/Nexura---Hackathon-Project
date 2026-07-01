@@ -86,6 +86,21 @@ async function fetchWithAuth(endpoint, options = {}) {
         
         return response;
     } catch (err) {
+        if (typeof mockFetchWithAuth !== "function") {
+            try {
+                await new Promise((resolve) => {
+                    const script = document.createElement("script");
+                    script.src = "js/mock-api.js";
+                    script.onload = resolve;
+                    script.onerror = resolve;
+                    document.head.appendChild(script);
+                });
+            } catch (e) {}
+        }
+        if (typeof mockFetchWithAuth === "function") {
+            console.warn("[Nexura] Backend unreachable. Using standalone cloud fallback API.");
+            return await mockFetchWithAuth(endpoint, options);
+        }
         showToast("Server connection error. Please try again.", "error");
         throw err;
     }
