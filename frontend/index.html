@@ -54,10 +54,6 @@
     </div>
 
     <script>
-        // Automatic session redirect check
-        if (localStorage.getItem("nexura-token")) {
-            window.location.href = "dashboard.html";
-        }
         const savedTheme = localStorage.getItem("nexura-theme") || "light";
         document.documentElement.setAttribute("data-theme", savedTheme);
     </script>

@@ -86,12 +86,10 @@
                 });
 
                 if (response.ok) {
-                    const data = await response.json();
-                    setSession(data.token, data.email, data.fullName);
-                    showToast("Registration successful! Welcome to Nexura.", "success");
+                    showToast("Account created successfully! Please sign in to continue.", "success");
                     setTimeout(() => {
-                        window.location.href = "dashboard.html";
-                    }, 800);
+                        window.location.href = "login.html";
+                    }, 1200);
                 } else {
                     const error = await response.text();
                     showToast(error || "Registration failed. Email may already be in use.", "error");
